@@ -15,11 +15,9 @@ mod overlay;
 mod ws_runtime;
 mod tools;
 
-use bubble::{
-    close_bubble_by_label, create_message_bubble, resize_bubble, take_bubble_content, BubbleInfo,
-};
+use bubble::{create_message_bubble, resize_bubble, take_bubble_content, BubbleInfo};
+use acp_runtime::start_acp_client;
 use config::{AppConfig, load_config as load_config_impl, save_config as save_config_impl};
-use acp_runtime::acp_url_from_config;
 use overlay::{
     close_tool_call_overlay, copilot_close, copilot_enter_monitor, quick_chat_close,
     toggle_copilot_window, toggle_quick_chat,
@@ -93,130 +91,6 @@ pub(crate) struct AppState {
     pub(crate) displayed: Mutex<String>,
     /// "Kaya is thinking…" 气泡的 label，文字到达时关闭
     pub(crate) thinking_bubble_label: Mutex<Option<String>>,
-}
-
-fn start_acp_client(app: &AppHandle, config: &AppConfig, shared_signal_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<ws_client::SignalRequest>>>>) {
-    use tokio::sync::mpsc;
-
-    let (event_tx, mut event_rx) = mpsc::channel::<acp_client::AcpEvent>(100);
-    let (msg_tx, msg_rx) = mpsc::channel::<String>(100);
-
-    // Save msg_tx to AppState so Tauri commands can send messages
-    if let Some(s) = app.try_state::<AppState>() {
-        if let Ok(mut tx) = s.acp_tx.lock() {
-            *tx = Some(msg_tx);
-        }
-    }
-
-    let acp_url = acp_url_from_config(config);
-    let acp_cwd = config.acp_cwd.clone().unwrap_or_default();
-
-    tauri::async_runtime::spawn(async move {
-        acp_client::run_acp_client(acp_url, event_tx, msg_rx, acp_cwd, shared_signal_tx).await;
-    });
-
-    let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = event_rx.recv().await {
-            match &event {
-                acp_client::AcpEvent::Connected => {
-                    if let Some(s) = handle.try_state::<AppState>() {
-                        if let Ok(mut st) = s.acp_connected.lock() {
-                            *st = true;
-                        }
-                    }
-                    let _ = handle.emit("acp-status", serde_json::json!({"status": "已连接"}));
-                }
-                acp_client::AcpEvent::Disconnected => {
-                    if let Some(s) = handle.try_state::<AppState>() {
-                        if let Ok(mut st) = s.acp_connected.lock() {
-                            *st = false;
-                        }
-                    }
-                    let _ = handle.emit("acp-status", serde_json::json!({"status": "已断开"}));
-                }
-                acp_client::AcpEvent::StreamChunk { response_text, response_thinking } => {
-                    let _ = handle.emit("acp-message", serde_json::json!({"content": response_text}));
-                    let state = handle.state::<AppState>();
-                    *state.debounce_thinking.lock().unwrap() = response_thinking.clone();
-                    *state.debounce_text.lock().unwrap() = response_text.clone();
-                    *state.debounce_last.lock().unwrap() = Instant::now();
-
-                    // ── thinking 状态气泡 ──
-                    // 只有在 thinking 流有内容、text 流还没开始时才展示
-                    if !response_thinking.trim().is_empty() && response_text.trim().is_empty() {
-                        let mut label = state.thinking_bubble_label.lock().unwrap();
-                        if label.is_none() {
-                            let lbl = create_message_bubble(&handle, "Kaya is thinking…");
-                            *label = Some(lbl);
-                        }
-                    } else if !response_text.trim().is_empty() {
-                        // text 开始输出 → 关闭 thinking 气泡（如果还开着）
-                        let mut label = state.thinking_bubble_label.lock().unwrap();
-                        if let Some(lbl) = label.take() {
-                            drop(label);
-                            close_bubble_by_label(&handle, &lbl);
-                        }
-                    }
-                }
-                acp_client::AcpEvent::ResponseDone => {
-                    let _ = handle.emit("acp-done", serde_json::json!({"done": true}));
-                    // 回复完成，立即冲刷去抖缓冲（把 last 设到过去让下一个 tick 直接触发）
-                    let state = handle.state::<AppState>();
-                    *state.debounce_last.lock().unwrap() = Instant::now() - Duration::from_secs(10);
-                    // 关闭 thinking 气泡（防止只有 thinking 没有 text 的边界情况）
-                    let mut label = state.thinking_bubble_label.lock().unwrap();
-                    if let Some(lbl) = label.take() {
-                        drop(label);
-                        close_bubble_by_label(&handle, &lbl);
-                    }
-                }
-                acp_client::AcpEvent::SessionReady { session_id } => {
-                    if let Some(s) = handle.try_state::<AppState>() {
-                        if let Ok(mut sid) = s.session_id.lock() {
-                            *sid = Some(session_id.clone());
-                        }
-                    }
-                    let _ = handle.emit("acp-session", serde_json::json!({"sessionId": session_id}));
-                    // 通过气泡通知新会话已创建，5s 后自动消失
-                    create_message_bubble(&handle, "Kalos-lab004 Kaya ONLINE");
-                    let h = handle.clone();
-                    tauri::async_runtime::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                        // 找到 session 气泡的 label 并关闭
-                        let label = {
-                            let state = h.state::<AppState>();
-                            let bubbles = state.active_bubbles.lock().unwrap();
-                            bubbles.iter()
-                                .find(|b| {
-                                    state.bubble_content.lock().unwrap()
-                                        .get(&b.label)
-                                        .map(|c| c == "Kalos-lab004 Kaya ONLINE")
-                                        .unwrap_or(false)
-                                })
-                                .map(|b| b.label.clone())
-                        };
-                        if let Some(label) = label {
-                            let state = h.state::<AppState>();
-                            state.bubble_content.lock().unwrap().remove(&label);
-                            state.active_bubbles.lock().unwrap().retain(|b| b.label != label);
-                            if let Some(win) = h.get_webview_window(&label) {
-                                let _ = win.close();
-                            }
-                        }
-                    });
-                }
-                acp_client::AcpEvent::Error(e) => {
-                    if let Some(s) = handle.try_state::<AppState>() {
-                        if let Ok(mut st) = s.acp_connected.lock() {
-                            *st = false;
-                        }
-                    }
-                    let _ = handle.emit("acp-status", serde_json::json!({"status": format!("错误: {}", e)}));
-                }
-            }
-        }
-    });
 }
 
 #[tauri::command]
