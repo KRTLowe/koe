@@ -44,8 +44,13 @@ pub(crate) enum ClientboundMessage {
 impl ClientboundMessage {
     pub(crate) fn parse_text(text: &str) -> Result<Self, serde_json::Error> {
         let value: Value = serde_json::from_str(text)?;
-        let Some(message_type) = value.get("type").and_then(Value::as_str) else {
+        let Some(type_value) = value.get("type") else {
             return Ok(Self::MissingType);
+        };
+        let Some(message_type) = type_value.as_str() else {
+            return Ok(Self::Unknown {
+                message_type: type_value.to_string(),
+            });
         };
 
         let message = match message_type {
@@ -171,5 +176,69 @@ mod tests {
                 message_type: "future_message".to_string(),
             },
         );
+    }
+
+    #[test]
+    fn parses_remaining_server_message_variants() {
+        let cases = [
+            (r#"{"type":"pong"}"#, ClientboundMessage::Pong),
+            (
+                r#"{"type":"file_end","file_id":"f_1","checksum":"sha256:abc"}"#,
+                ClientboundMessage::FileEnd {
+                    file_id: "f_1".to_string(),
+                    checksum: "sha256:abc".to_string(),
+                },
+            ),
+            (
+                r#"{"type":"register_tools_result","registered":3}"#,
+                ClientboundMessage::RegisterToolsResult { registered: 3 },
+            ),
+            (
+                r#"{"type":"file_upload_start_ack","file_id":"up_1","ok":true}"#,
+                ClientboundMessage::FileUploadStartAck,
+            ),
+            (
+                r#"{"type":"file_upload_result","file_id":"up_1","ok":true,"path":"/tmp/a.png"}"#,
+                ClientboundMessage::FileUploadResult {
+                    file_id: "up_1".to_string(),
+                    ok: true,
+                    path: Some("/tmp/a.png".to_string()),
+                    error: None,
+                },
+            ),
+            (
+                r#"{"type":"acp_inject","text":"hello"}"#,
+                ClientboundMessage::AcpInject {
+                    text: "hello".to_string(),
+                },
+            ),
+            (r#"{"type":"signal_ack","name":"x","ok":true}"#, ClientboundMessage::SignalAck),
+        ];
+
+        for (raw, expected) in cases {
+            let message = ClientboundMessage::parse_text(raw).expect("message should parse");
+            assert_eq!(message, expected);
+        }
+    }
+
+    #[test]
+    fn distinguishes_missing_type_from_non_string_type() {
+        let missing = ClientboundMessage::parse_text(r#"{"ok":true}"#)
+            .expect("missing type should parse as MissingType");
+        assert_eq!(missing, ClientboundMessage::MissingType);
+
+        let numeric = ClientboundMessage::parse_text(r#"{"type":123}"#)
+            .expect("numeric type should parse as Unknown");
+        assert_eq!(
+            numeric,
+            ClientboundMessage::Unknown {
+                message_type: "123".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn reports_malformed_json_as_parse_error() {
+        assert!(ClientboundMessage::parse_text("not json").is_err());
     }
 }

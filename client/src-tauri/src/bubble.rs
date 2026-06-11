@@ -6,6 +6,11 @@ use tauri::{
 
 use crate::AppState;
 
+const BUBBLE_WIDTH: f64 = 338.0;
+const BUBBLE_GAP: f64 = 8.0;
+const BUBBLE_COLUMN_GAP: f64 = 16.0;
+const MIN_SCREEN_TOP: f64 = 20.0;
+
 pub(crate) struct BubbleInfo {
     pub(crate) label: String,
     pub(crate) height: f64,
@@ -40,37 +45,18 @@ fn anchor_xy(app: &AppHandle) -> (f64, f64) {
 }
 
 fn reposition_all(app: &AppHandle) {
-    let gap = 8.0;
-    let col_gap = 16.0;
-    let bw = 338.0;
-    let min_top = 20.0;
     let (float_x, anchor_y) = anchor_xy(app);
-    let base_x = float_x - bw - gap + 80.0;
+    let base_x = float_x - BUBBLE_WIDTH - BUBBLE_GAP + 80.0;
 
     let positions: Vec<(String, f64, f64)> = {
         let state = app.state::<AppState>();
         let bubbles = state.active_bubbles.lock().unwrap();
-        if bubbles.is_empty() {
-            return;
-        }
-
-        let mut result = Vec::with_capacity(bubbles.len());
-        let mut col = 0;
-        let mut col_y = anchor_y;
-
-        for b in bubbles.iter().rev() {
-            col_y -= b.height;
-            result.push((label_clone(b), base_x - col as f64 * (bw + col_gap), col_y));
-            col_y -= gap;
-
-            if col_y < min_top + gap {
-                col += 1;
-                col_y = anchor_y;
-            }
-        }
-        result.reverse();
-        result
+        layout_positions(&bubbles, base_x, anchor_y)
     };
+
+    if positions.is_empty() {
+        return;
+    }
 
     for (label, x, y) in &positions {
         if let Some(win) = app.get_webview_window(label) {
@@ -79,8 +65,28 @@ fn reposition_all(app: &AppHandle) {
     }
 }
 
-fn label_clone(bubble: &BubbleInfo) -> String {
-    bubble.label.clone()
+fn layout_positions(bubbles: &[BubbleInfo], base_x: f64, anchor_y: f64) -> Vec<(String, f64, f64)> {
+    let mut positions = Vec::with_capacity(bubbles.len());
+    let mut col = 0;
+    let mut col_y = anchor_y;
+
+    for bubble in bubbles.iter().rev() {
+        col_y -= bubble.height;
+        positions.push((
+            bubble.label.clone(),
+            base_x - col as f64 * (BUBBLE_WIDTH + BUBBLE_COLUMN_GAP),
+            col_y,
+        ));
+        col_y -= BUBBLE_GAP;
+
+        if col_y < MIN_SCREEN_TOP + BUBBLE_GAP {
+            col += 1;
+            col_y = anchor_y;
+        }
+    }
+
+    positions.reverse();
+    positions
 }
 
 #[tauri::command]
@@ -108,7 +114,6 @@ pub(crate) fn resize_bubble(
 }
 
 pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
-    let bubble_width = 338.0;
     let state = app.state::<AppState>();
 
     let seq = {
@@ -136,7 +141,7 @@ pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
         .skip_taskbar(true)
         .resizable(false)
         .shadow(false)
-        .inner_size(bubble_width, 40.0)
+        .inner_size(BUBBLE_WIDTH, 40.0)
         .position(0.0, 0.0)
         .visible(false)
         .build();
@@ -159,5 +164,32 @@ pub(crate) fn close_bubble_by_label(app: &AppHandle, label: &str) {
         .retain(|bubble| bubble.label != label);
     if let Some(win) = app.get_webview_window(label) {
         let _ = win.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{layout_positions, BubbleInfo};
+
+    #[test]
+    fn layout_positions_stacks_newest_near_anchor_and_wraps_columns() {
+        let bubbles = vec![
+            BubbleInfo { label: "old".to_string(), height: 40.0 },
+            BubbleInfo { label: "older-middle".to_string(), height: 40.0 },
+            BubbleInfo { label: "middle".to_string(), height: 40.0 },
+            BubbleInfo { label: "new".to_string(), height: 40.0 },
+        ];
+
+        let positions = layout_positions(&bubbles, 100.0, 130.0);
+
+        assert_eq!(
+            positions,
+            vec![
+                ("old".to_string(), -254.0, 90.0),
+                ("older-middle".to_string(), 100.0, -6.0),
+                ("middle".to_string(), 100.0, 42.0),
+                ("new".to_string(), 100.0, 90.0),
+            ],
+        );
     }
 }

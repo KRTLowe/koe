@@ -17,24 +17,24 @@
 - 修改：`client/src-tauri/src/lib.rs`
 - 修改：`client/src-tauri/src/ws_client.rs`
 
-- [ ] **步骤 1：编写失败的协议解析测试**
+- [x] **步骤 1：编写失败的协议解析测试**
 
 在 `protocol.rs` 中先添加 `#[cfg(test)]` 测试，期望 `ClientboundMessage::parse_text()` 能解析 `auth_result`、`file_meta`、`call_tool` 和未知消息。
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`cargo test protocol --lib`
 预期：编译失败或测试失败，因为 `ClientboundMessage` 尚未实现。
 
-- [ ] **步骤 3：实现最小协议 enum**
+- [x] **步骤 3：实现最小协议 enum**
 
-实现 `ClientboundMessage`、`FileUploadResult`、`parse_text()`，未知消息返回 `Unknown { message_type }`，无 `type` 返回 `MissingType`。
+实现 `ClientboundMessage` 和 `parse_text()`；`file_upload_result` 作为 `ClientboundMessage::FileUploadResult { ... }` 变体表达。未知字符串消息返回 `Unknown { message_type }`，无 `type` 返回 `MissingType`，存在但非字符串的 `type` 返回 `Unknown` 并保留原值文本。
 
-- [ ] **步骤 4：替换 `ws_client.rs` 裸 JSON 分发**
+- [x] **步骤 4：替换 `ws_client.rs` 裸 JSON 分发**
 
 把 `serde_json::Value` 的 `val["type"]` 分支替换成 `ClientboundMessage` match，保持原行为和日志语义。
 
-- [ ] **步骤 5：验证协议切片**
+- [x] **步骤 5：验证协议切片**
 
 运行：`cargo test protocol --lib && cargo check`
 预期：测试通过；`cargo check` 只保留既有 warning，不新增错误。
@@ -45,19 +45,19 @@
 - 创建：`client/src-tauri/src/bubble.rs`
 - 修改：`client/src-tauri/src/lib.rs`
 
-- [ ] **步骤 1：移动气泡数据结构与函数**
+- [x] **步骤 1：移动气泡数据结构与函数**
 
-将 `BubbleInfo`、`take_bubble_content`、`anchor_xy`、`reposition_all`、`resize_bubble`、`create_message_bubble`、`close_bubble_by_label` 移到 `bubble.rs`。
+将 `BubbleInfo`、`take_bubble_content`、`anchor_xy`、`reposition_all`、`resize_bubble`、`create_message_bubble`、`close_bubble_by_label` 移到 `bubble.rs`，并将气泡布局计算抽为可单测的 `layout_positions()`。
 
-- [ ] **步骤 2：暴露必要 app state 字段**
+- [x] **步骤 2：暴露必要 app state 字段**
 
 将 `AppState` 及气泡相关字段设为 `pub(crate)`，让 sibling module 可访问；不要扩大到 `pub`。
 
-- [ ] **步骤 3：更新命令注册与调用点**
+- [x] **步骤 3：更新命令注册与调用点**
 
 在 `lib.rs` 中使用 `bubble::create_message_bubble`、`bubble::close_bubble_by_label`、`bubble::resize_bubble`、`bubble::take_bubble_content`。
 
-- [ ] **步骤 4：验证拆分行为不破坏构建**
+- [x] **步骤 4：验证拆分行为不破坏构建**
 
 运行：`cargo check && npm run build`
 预期：构建通过。
@@ -67,12 +67,12 @@
 **文件：**
 - 修改：所有上述文件
 
-- [ ] **步骤 1：运行完整验证**
+- [x] **步骤 1：运行完整验证**
 
 运行：`cargo test --lib && cargo check && npm run build`
 预期：全部通过；记录既有 warning。
 
-- [ ] **步骤 2：分提交**
+- [x] **步骤 2：分提交**
 
 提交 1：`refactor: add typed WebSocket protocol parsing`
 提交 2：`refactor: extract Tauri bubble management`
