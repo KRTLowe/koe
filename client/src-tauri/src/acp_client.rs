@@ -188,6 +188,7 @@ pub async fn run_acp_client(
         let mut response_text = String::new();
         let mut response_thinking = String::new();
         let mut last_prompt_id: Option<RequestId> = None;
+        let mut response_in_flight = false;
 
         // 僵尸检测共享状态
         let last_real_activity: Cell<Instant> = Cell::new(Instant::now());
@@ -236,6 +237,7 @@ pub async fn run_acp_client(
                                             response_text.clear();
                                             response_thinking.clear();
                                             last_prompt_id = Some(recovery_id);
+                                            response_in_flight = true;
                                             ws_send!(format!("{}\n", req));
                                             log::info!("[ACP] zombie: recovery prompt sent (id={})", recovery_id);
                                             last_real_activity.set(Instant::now());
@@ -258,8 +260,9 @@ pub async fn run_acp_client(
                         // else: still waiting for health result, continue
                     } else {
                         // 无进行中的检查 → 检测是否僵尸
+                        // 仅在有进行中的 prompt 时才检测——空闲挂机不需要健康检查
                         let idle = last_real_activity.get().elapsed();
-                        if idle > Duration::from_secs(60) {
+                        if idle > Duration::from_secs(60) && response_in_flight {
                             log::info!("[ACP] zombie check: idle={}s, sending health check", idle.as_secs());
                             if let Ok(guard) = shared_signal_tx.lock() {
                                 if let Some(tx) = guard.as_ref() {
@@ -321,6 +324,7 @@ pub async fn run_acp_client(
                                                 response_text.clear();
                                                 response_thinking.clear();
                                                 last_prompt_id = Some(recovery_id);
+                                                response_in_flight = true;
                                                 ws_send!(format!("{}\n", req));
                                                 log::info!("[ACP] zombie: recovery prompt sent (id={})", recovery_id);
                                                 last_real_activity.set(Instant::now());
@@ -338,6 +342,7 @@ pub async fn run_acp_client(
                                 continue;
                             }
                             if text == "__cancel__" {
+                                response_in_flight = false;
                                 if let Some(ref sid) = session_id {
                                     let cancel = serde_json::json!({
                                         "jsonrpc": "2.0",
@@ -374,6 +379,7 @@ pub async fn run_acp_client(
                                 response_text.clear();
                                 response_thinking.clear();
                                 last_prompt_id = Some(prompt_id);
+                                response_in_flight = true;
                                 ws_send!(format!("{}\n", req.to_string()));
                                 log::info!("[ACP] session/prompt sent (id={})", prompt_id);
                             } else {
@@ -451,6 +457,7 @@ pub async fn run_acp_client(
                                 // 必须在 result 处理之前检查，避免 prompt 响应被 session/new 分支误判
                                 let is_prompt_done = last_prompt_id.map_or(false, |pid| id == pid);
                                 if is_prompt_done {
+                                    response_in_flight = false;
                                     let _ = event_tx.try_send(AcpEvent::ResponseDone);
                                 }
 
@@ -490,6 +497,7 @@ pub async fn run_acp_client(
                                     // session/prompt 完成的 fallback：有 stopReason 就算完
                                     // 仅在 is_prompt_done 未命中时触发，避免重复
                                     if !is_prompt_done && result.get("stopReason").is_some() {
+                                        response_in_flight = false;
                                         log::info!("ACP prompt done (stopReason, id={}, last_id={:?})", id, last_prompt_id);
                                         let _ = event_tx.try_send(AcpEvent::ResponseDone);
                                     }

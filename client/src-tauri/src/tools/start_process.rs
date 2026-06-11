@@ -1,8 +1,14 @@
 use serde_json::Value;
 use std::process::{Command, Stdio};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use super::{Tool, ToolResult};
 use crate::config::AppConfig;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub struct StartProcessTool {
     enabled: bool,
@@ -87,6 +93,10 @@ impl Tool for StartProcessTool {
         );
 
         let mut cmd = Command::new(path);
+        #[cfg(target_os = "windows")]
+        {
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         cmd.args(&cli_args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())

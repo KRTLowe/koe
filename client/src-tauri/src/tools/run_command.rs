@@ -2,11 +2,16 @@ use serde_json::Value;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use super::{Tool, ToolResult};
 use crate::config::AppConfig;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_OUTPUT: usize = 16 * 1024; // 16KB
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub struct RunCommandTool {
     enabled: bool,
@@ -68,7 +73,12 @@ impl Tool for RunCommandTool {
 
         log::info!("[RunCommand] executing: {}", command);
 
-        let mut child = match Command::new("cmd")
+        let mut cmd_builder = &mut Command::new("cmd");
+        #[cfg(target_os = "windows")]
+        {
+            cmd_builder = cmd_builder.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = match cmd_builder
             .args(["/C", command])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

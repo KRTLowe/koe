@@ -119,7 +119,9 @@ class WebSocketHandler:
                 data = json.loads(message)
                 msg_type = data.get("type")
 
-                # 任何有效 JSON 消息都算客户端活跃（客户端用协议层 Ping 代替了应用层 heartbeat）
+                # 任何有效 JSON 消息都算客户端活跃。
+                # 注意：协议层 Ping/Pong 由 websockets 库底层处理，不会经过这里，
+                # 所以 ConnectionManager 的 last_heartbeat 必须由应用层 {"type":"heartbeat"} 来更新。
                 if client_id:
                     self.cm.update_heartbeat(client_id)
 

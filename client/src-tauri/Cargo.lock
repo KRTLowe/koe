@@ -1043,34 +1043,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "file-transfer-hub-client"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "async-trait",
- "chrono",
- "encoding_rs",
- "env_logger",
- "futures-util",
- "log",
- "open",
- "regex",
- "screenshots",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-shell",
- "tokio",
- "tokio-tungstenite",
- "url",
- "walkdir",
- "windows 0.58.0",
-]
-
-[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2107,6 +2079,34 @@ checksum = "5dea2b27dd239b2556ed7a25ba842fe47fd602e7fc7433c2a8d6106d4d9edd70"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "kaya-transfer-hub-client"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "async-trait",
+ "chrono",
+ "encoding_rs",
+ "env_logger",
+ "futures-util",
+ "log",
+ "open",
+ "regex",
+ "screenshots",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-shell",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
+ "walkdir",
+ "windows 0.58.0",
 ]
 
 [[package]]

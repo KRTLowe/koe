@@ -156,7 +156,7 @@ pub async fn run_client(
         }
         log::info!("[WSClient] auth sent, waiting for auth_result...");
 
-        // 协议层 Ping 保活（代替应用层 heartbeat JSON）
+        // 协议层 Ping 保活（保持 TCP 连接不闲置断开；ConnectionManager 不走这一层，需要下面的 heartbeat JSON 同步 last_heartbeat）
         let mut ping_interval =
             tokio::time::interval(tokio::time::Duration::from_secs(25));
         ping_interval.reset();
