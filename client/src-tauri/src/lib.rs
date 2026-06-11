@@ -920,6 +920,22 @@ pub fn run() {
     .map(|()| log::set_max_level(LevelFilter::Info))
     .ok();
 
+    // panic hook：tokio task 内 panic 默认不打印到 log 文件，这里手动落地
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = format!(
+            "PANIC: {}\n",
+            info.to_string()
+        );
+        let _ = std::io::stderr().write_all(msg.as_bytes());
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("kaya-client.log")
+            .and_then(|mut f| f.write_all(msg.as_bytes()));
+        default_hook(info);
+    }));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(AppState {
