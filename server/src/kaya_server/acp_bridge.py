@@ -62,6 +62,15 @@ async def start_acp_bridge(port: int = 8765) -> None:
                     try: await ws.send(text)
                     except Exception: break
             except Exception: pass
+            finally:
+                # _fwd() 退出意味着服务端→客户端方向断了。
+                # 关掉 ws 强制客户端重连，让 _reconnect_buffers 里积压的消息能倒出来。
+                if not ws.state.closed:
+                    logger.warning("ACP _fwd() task died for %s, closing to force reconnect", cid)
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
 
         fwd = asyncio.create_task(_fwd())
         try:
