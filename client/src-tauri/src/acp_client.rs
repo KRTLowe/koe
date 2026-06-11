@@ -69,6 +69,14 @@ enum HealthStatus {
 
 type RequestId = u64;
 
+/// 在 &str 的 byte 索引安全截断，保证落在合法字符边界上。
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if max_bytes >= s.len() { return s; }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    &s[..end]
+}
+
 const RECONNECT_BASE_DELAY: u64 = 1;
 const RECONNECT_MAX_DELAY: u64 = 60;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -299,7 +307,7 @@ pub async fn run_acp_client(
                                 } else {
                                     HealthStatus::Stuck
                                 };
-                                log::info!("[ACP] health check result: {:?} (text={})", status, &text[..text.len().min(80)]);
+                                log::info!("[ACP] health check result: {:?} (text={})", status, safe_truncate(&text, 80));
                                 match status {
                                     HealthStatus::Healthy => {
                                         last_real_activity.set(Instant::now());
@@ -364,7 +372,7 @@ pub async fn run_acp_client(
                             } else if let Some(ref sid) = session_id {
                                 let prompt_id = next_id;
                                 next_id += 1;
-                                let text_preview = &text[..text.len().min(80)];
+                                let text_preview = safe_truncate(&text, 80);
                                 log::info!("[ACP] sending session/prompt: id={} sessionId={} preview={}",
                                     prompt_id, sid, text_preview);
                                 let req = serde_json::json!({

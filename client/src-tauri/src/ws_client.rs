@@ -68,6 +68,14 @@ struct PendingToolResult {
     local_path: String,
 }
 
+/// 在 &str 的 byte 索引安全截断，保证落在合法字符边界上。
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if max_bytes >= s.len() { return s; }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    &s[..end]
+}
+
 /// 运行 WebSocket 客户端
 ///
 /// * `config` - 客户端配置（server_url, client_id, passkey）
@@ -369,7 +377,7 @@ pub async fn run_client(
                     match msg {
                         Some(Ok(Message::Text(text))) => {
                             log::info!("[WSClient] received text frame: len={}, preview={}",
-                                text.len(), &text[..text.len().min(120)]);
+                                text.len(), safe_truncate(&text, 120));
                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                                 match val["type"].as_str() {
                                     Some("auth_result") => {
@@ -556,7 +564,7 @@ pub async fn run_client(
                                     }
                                     Some("acp_inject") => {
                                         if let Some(text) = val["text"].as_str() {
-                                            let text_preview = &text[..text.len().min(80)];
+                                            let text_preview = safe_truncate(text, 80);
                                             log::info!("[WSClient] acp_inject: preview={}", text_preview);
                                             if event_tx.try_send(WsEvent::AcpInject {
                                                 text: text.to_string(),
@@ -576,7 +584,7 @@ pub async fn run_client(
                                     }
                                 }
                             } else {
-                                log::info!("[WSClient] failed to parse JSON: preview={}", &text[..text.len().min(80)]);
+                                log::info!("[WSClient] failed to parse JSON: preview={}", safe_truncate(&text, 80));
                             }
                         }
                         Some(Ok(Message::Binary(data))) => {
