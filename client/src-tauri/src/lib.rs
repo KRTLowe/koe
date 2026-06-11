@@ -9,8 +9,12 @@ mod acp_client;
 mod tool_executor;
 mod signal_emitter;
 mod protocol;
+mod bubble;
 mod tools;
 
+use bubble::{
+    close_bubble_by_label, create_message_bubble, resize_bubble, take_bubble_content, BubbleInfo,
+};
 use config::{AppConfig, load_config as load_config_impl, save_config as save_config_impl};
 use std::sync::{Arc, Mutex};
 use std::sync::OnceLock;
@@ -50,41 +54,36 @@ pub(crate) fn tool_manager_defs() -> Vec<ws_client::ToolDef> {
     vec![]
 }
 
-struct BubbleInfo {
-    label: String,
-    height: f64,
-}
-
-struct AppState {
-    config: Mutex<Option<AppConfig>>,
-    connection_status: Mutex<String>,
-    ws_started: Mutex<bool>,
-    acp_started: Mutex<bool>,
-    acp_tx: Mutex<Option<tokio::sync::mpsc::Sender<String>>>,
-    acp_connected: Mutex<bool>,
-    session_id: Mutex<Option<String>>,
-    upload_tx: Mutex<Option<tokio::sync::mpsc::Sender<ws_client::UploadRequest>>>,
-    signal_tx: Mutex<Option<tokio::sync::mpsc::Sender<ws_client::SignalRequest>>>,
-    tool_manager: Mutex<Option<ToolManager>>,
-    re_register_tx: Mutex<Option<tokio::sync::mpsc::Sender<()>>>,
+pub(crate) struct AppState {
+    pub(crate) config: Mutex<Option<AppConfig>>,
+    pub(crate) connection_status: Mutex<String>,
+    pub(crate) ws_started: Mutex<bool>,
+    pub(crate) acp_started: Mutex<bool>,
+    pub(crate) acp_tx: Mutex<Option<tokio::sync::mpsc::Sender<String>>>,
+    pub(crate) acp_connected: Mutex<bool>,
+    pub(crate) session_id: Mutex<Option<String>>,
+    pub(crate) upload_tx: Mutex<Option<tokio::sync::mpsc::Sender<ws_client::UploadRequest>>>,
+    pub(crate) signal_tx: Mutex<Option<tokio::sync::mpsc::Sender<ws_client::SignalRequest>>>,
+    pub(crate) tool_manager: Mutex<Option<ToolManager>>,
+    pub(crate) re_register_tx: Mutex<Option<tokio::sync::mpsc::Sender<()>>>,
     /// 气泡序号计数器
-    bubble_seq: Mutex<u64>,
+    pub(crate) bubble_seq: Mutex<u64>,
     /// 活跃气泡栈（最新的在末尾）
-    active_bubbles: Mutex<Vec<BubbleInfo>>,
+    pub(crate) active_bubbles: Mutex<Vec<BubbleInfo>>,
     /// 最后一条消息时间（用于 30s 超时清理）
-    last_msg_time: Mutex<Option<Instant>>,
+    pub(crate) last_msg_time: Mutex<Option<Instant>>,
     /// 待取走的气泡内容 label → text
-    bubble_content: Mutex<HashMap<String, String>>,
+    pub(crate) bubble_content: Mutex<HashMap<String, String>>,
     /// 去抖累积：thinking 原始字段（透传，不做拼装）
-    debounce_thinking: Mutex<String>,
+    pub(crate) debounce_thinking: Mutex<String>,
     /// 去抖累积：text 原始字段
-    debounce_text: Mutex<String>,
+    pub(crate) debounce_text: Mutex<String>,
     /// 上次收到 chunk 的时间
-    debounce_last: Mutex<Instant>,
+    pub(crate) debounce_last: Mutex<Instant>,
     /// 已通过气泡展示的 display 文本（用于前缀 diff）
-    displayed: Mutex<String>,
+    pub(crate) displayed: Mutex<String>,
     /// "Kaya is thinking…" 气泡的 label，文字到达时关闭
-    thinking_bubble_label: Mutex<Option<String>>,
+    pub(crate) thinking_bubble_label: Mutex<Option<String>>,
 }
 
 fn start_ws_client(app: &AppHandle, config: AppConfig, shared_signal_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<ws_client::SignalRequest>>>>) {
@@ -750,148 +749,6 @@ fn resize_float_window(app: tauri::AppHandle, width: f64, height: f64) -> Result
         }
     }
     Ok(())
-}
-
-#[tauri::command]
-fn take_bubble_content(label: String, state: tauri::State<AppState>) -> Result<String, String> {
-    state.bubble_content.lock().map_err(|e| e.to_string())?.remove(&label).ok_or("no content".to_string())
-}
-
-/// 从锚点向上全量重算所有气泡位置（最新的在最下靠近锚点，旧的往上叠）
-fn anchor_xy(app: &AppHandle) -> (f64, f64) {
-    if let Some(float) = app.get_webview_window("kaya-float") {
-        let pos = float.inner_position().ok();
-        let size = float.inner_size().ok();
-        let s = size.unwrap_or(PhysicalSize::new(320, 320));
-        let logical_h = s.height as f64 / float.scale_factor().unwrap_or(1.0);
-        (
-            pos.map(|p| p.x as f64).unwrap_or(0.0),
-            pos.map(|p| p.y as f64).unwrap_or(0.0) + logical_h * 0.33,
-        )
-    } else {
-        (0.0, 100.0)
-    }
-}
-
-fn anchor_y_from_float(app: &AppHandle) -> f64 {
-    if let Some(float) = app.get_webview_window("kaya-float") {
-        let pos = float.inner_position().ok();
-        let size = float.inner_size().ok();
-        let s = size.unwrap_or(PhysicalSize::new(320, 320));
-        let logical_h = s.height as f64 / float.scale_factor().unwrap_or(1.0);
-        pos.map(|p| p.y as f64).unwrap_or(0.0) + logical_h * 0.33
-    } else {
-        100.0
-    }
-}
-
-/// 全量重算所有气泡位置（支持多列）
-fn reposition_all(app: &AppHandle) {
-    let gap = 8.0;
-    let col_gap = 16.0;
-    let bw = 338.0;
-    let min_top = 20.0; // 屏幕顶部边距
-    let (float_x, anchor_y) = anchor_xy(app);
-    let base_x = float_x - bw - gap + 80.0;
-
-    // 锁内计算所有气泡的 (label, x, y)
-    let positions: Vec<(String, f64, f64)> = {
-        let state = app.state::<AppState>();
-        let bubbles = state.active_bubbles.lock().unwrap();
-        if bubbles.is_empty() { return; }
-
-        let mut result = Vec::with_capacity(bubbles.len());
-        let mut col = 0;
-        let mut col_y = anchor_y;
-
-        // 从最新（list 末尾）往旧遍历，模拟堆叠
-        for (i, b) in bubbles.iter().enumerate().rev() {
-            col_y -= b.height;
-            result.push((b.label.clone(), base_x - col as f64 * (bw + col_gap), col_y));
-            col_y -= gap;
-
-            // 超出顶部 → 换列
-            if col_y < min_top + gap {
-                col += 1;
-                col_y = anchor_y;
-            }
-        }
-        // result 是倒序（最新→最旧），反转
-        result.reverse();
-        result
-    };
-
-    // 释放锁后统一调 set_position
-    for (label, x, y) in &positions {
-        if let Some(win) = app.get_webview_window(label) {
-            let _ = win.set_position(PhysicalPosition::new(*x as i32, *y as i32));
-        }
-    }
-}
-
-#[tauri::command]
-fn resize_bubble(
-    app: tauri::AppHandle,
-    label: String,
-    height: f64,
-    state: tauri::State<AppState>,
-) -> Result<(), String> {
-    {
-        let mut bubbles = state.active_bubbles.lock().map_err(|e| e.to_string())?;
-        if let Some(b) = bubbles.iter_mut().find(|b| b.label == label) {
-            b.height = height;
-        }
-    }
-
-    if let Some(window) = app.get_webview_window(&label) {
-        window.set_size(PhysicalSize::new(338.0, height)).map_err(|e| e.to_string())?;
-    }
-
-    reposition_all(&app);
-    Ok(())
-}
-
-/// 创建消息气泡窗口并加入气泡栈。返回气泡 label，便于后续关闭。
-fn create_message_bubble(app: &AppHandle, content: &str) -> String {
-    let bubble_width = 338.0;
-    let state = app.state::<AppState>();
-
-    // 1. 生成 label 并存储内容
-    let seq = { let mut s = state.bubble_seq.lock().unwrap(); *s += 1; *s };
-    let label = format!("bubble-{}", seq);
-    state.bubble_content.lock().unwrap().insert(label.clone(), content.to_string());
-
-    // 2. 注册新气泡
-    state.active_bubbles.lock().unwrap().push(BubbleInfo { label: label.clone(), height: 40.0 });
-    *state.last_msg_time.lock().unwrap() = Some(Instant::now());
-
-    // 3. 创建窗口（临时位置，之后 reposition_all 修正）
-    let _ = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("bubble".into()))
-        .decorations(false).transparent(true).always_on_top(true)
-        .skip_taskbar(true).resizable(false).shadow(false)
-        .inner_size(bubble_width, 40.0)
-        .position(0.0, 0.0)
-        .visible(false)
-        .build();
-    // 先把窗口隐藏创建，避免抢焦点。BubblePage.vue 挂载后再调 show。
-    if let Some(win) = app.get_webview_window(&label) {
-        let _ = win.show();
-    }
-
-    // 4. 全量重算所有气泡位置（自动处理多列换行）
-    reposition_all(app);
-
-    label
-}
-
-/// 按 label 关闭一个气泡并从状态中移除。
-fn close_bubble_by_label(app: &AppHandle, label: &str) {
-    let state = app.state::<AppState>();
-    state.bubble_content.lock().unwrap().remove(label);
-    state.active_bubbles.lock().unwrap().retain(|b| b.label != label);
-    if let Some(win) = app.get_webview_window(label) {
-        let _ = win.close();
-    }
 }
 
 pub fn run() {
