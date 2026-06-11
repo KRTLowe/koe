@@ -1,0 +1,6 @@
+# Windows 交叉编译配置（仅 Windows 构建用）
+# [target.x86_64-pc-windows-gnu]
+# linker = "C:\\Users\\krict\\mingw64\\mingw64\\bin\\gcc.exe"
+#
+# [build]
+# target = "x86_64-pc-windows-gnu"

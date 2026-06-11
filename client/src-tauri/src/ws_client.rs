@@ -1,0 +1,622 @@
+use crate::config::AppConfig;
+use crate::file_handler;
+use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
+use serde_json::Value;
+use sha2::Digest;
+use std::collections::HashMap;
+use std::path::Path;
+use tokio::sync::mpsc;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+use url::Url;
+
+/// 前端上传请求，通过 Tauri IPC 发送到 ws_client 任务。
+#[derive(Debug)]
+pub struct UploadRequest {
+    pub file_path: String,
+}
+
+/// 前端外部信号请求。
+#[derive(Debug)]
+pub struct SignalRequest {
+    pub name: String,
+    pub sticky: bool,
+    pub priority: String,
+    pub notify_once: bool,
+    pub data: serde_json::Value,
+}
+
+/// WebSocket 事件，用于通知 Tauri 前端
+#[derive(Debug, Clone)]
+pub enum WsEvent {
+    Connected,
+    Disconnected,
+    FileReceived {
+        name: String,
+        size: u64,
+        data: Vec<u8>,
+    },
+    AcpInject {
+        text: String,
+    },
+    Error(String),
+    ToolCallStarted {
+        name: String,
+    },
+    ToolCallCompleted {
+        name: String,
+        is_error: bool,
+    },
+}
+
+/// 指数退避重连延迟（秒）
+const RECONNECT_BASE_DELAY: u64 = 1;
+const RECONNECT_MAX_DELAY: u64 = 60;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolDef {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub input_schema: Value,
+}
+
+/// 等待 file_upload_result 后发 tool_result 的上下文。
+struct PendingToolResult {
+    request_id: String,
+    file_name: String,
+    tool_name: String,
+    local_path: String,
+}
+
+/// 运行 WebSocket 客户端
+///
+/// * `config` - 客户端配置（server_url, client_id, passkey）
+/// * `event_tx` - 事件发送通道（向 Tauri 主线程发送事件）
+pub async fn run_client(
+    config: AppConfig,
+    event_tx: mpsc::Sender<WsEvent>,
+    mut upload_rx: mpsc::Receiver<UploadRequest>,
+    mut signal_rx: mpsc::Receiver<SignalRequest>,
+    mut re_register_rx: mpsc::Receiver<()>,
+) {
+    // 验证 URL 格式
+    if let Err(e) = Url::parse(&config.server_url) {
+        let _ = event_tx
+            .send(WsEvent::Error(format!("Invalid URL: {}", e)))
+            .await;
+        return;
+    }
+
+    let mut retry_delay = RECONNECT_BASE_DELAY;
+    let mut connect_attempt = 0u64;
+
+    loop {
+        connect_attempt += 1;
+        log::info!("[WSClient] connection attempt #{} to {} (retry_delay={}s)",
+            connect_attempt, config.server_url, retry_delay);
+
+        let connect_result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            connect_async(&config.server_url),
+        )
+        .await;
+
+        let (ws_stream, _response) = match connect_result {
+            Ok(Ok(r)) => {
+                log::info!("[WSClient] connected successfully on attempt #{}", connect_attempt);
+                r
+            },
+            Ok(Err(e)) => {
+                log::info!("[WSClient] connection failed: {} (will retry in {}s)", e, retry_delay);
+                let _ = event_tx
+                    .send(WsEvent::Error(format!("Connection failed: {}", e)))
+                    .await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay)).await;
+                retry_delay = (retry_delay * 2).min(RECONNECT_MAX_DELAY);
+                continue;
+            }
+            Err(_) => {
+                log::info!("[WSClient] connection timeout (5s) after attempt #{}", connect_attempt);
+                let _ = event_tx
+                    .send(WsEvent::Error("连接超时（5 秒），服务器不可达".to_string()))
+                    .await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay)).await;
+                retry_delay = (retry_delay * 2).min(RECONNECT_MAX_DELAY);
+                continue;
+            }
+        };
+
+        // 连接成功，重置退避
+        log::info!("[WSClient] retry_delay reset from {} to {}", retry_delay, RECONNECT_BASE_DELAY);
+        retry_delay = RECONNECT_BASE_DELAY;
+        connect_attempt = 0;
+
+        let _ = event_tx.send(WsEvent::Connected).await;
+
+        let (mut write, mut read) = ws_stream.split();
+
+        log::info!("[WSClient] sending auth: client_id={}", config.client_id);
+        let auth_msg = serde_json::json!({
+            "type": "auth",
+            "client_id": config.client_id,
+            "passkey": "[REDACTED]",
+        });
+        let auth_payload = serde_json::json!({
+            "type": "auth",
+            "client_id": config.client_id,
+            "passkey": config.passkey,
+        });
+        if write
+            .send(Message::Text(auth_payload.to_string()))
+            .await
+            .is_err()
+        {
+            log::info!("[WSClient] auth send failed");
+            continue;
+        }
+        log::info!("[WSClient] auth sent, waiting for auth_result...");
+
+        // 协议层 Ping 保活（代替应用层 heartbeat JSON）
+        let mut ping_interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(25));
+        ping_interval.reset();
+
+        let mut file_receive_state: Option<file_handler::FileReceive> = None;
+        // file_id → PendingToolResult，等待 upload 完成后再发 tool_result
+        let mut pending_tool_results: HashMap<String, PendingToolResult> = HashMap::new();
+        // 工具执行结果通道：request_id, tool_name, ToolResult
+        let (tool_done_tx, mut tool_done_rx) =
+            tokio::sync::mpsc::channel::<(String, String, crate::tool_executor::ToolResult)>(10);
+
+        'inner: loop {
+            tokio::select! {
+                _ = ping_interval.tick() => {
+                    // 协议层 Ping（tokio-tungstenite + Python websockets 自动回 Pong）
+                    if write.send(Message::Ping(vec![].into())).await.is_err() {
+                        log::info!("[WSClient] ping failed, reconnecting");
+                        break 'inner;
+                    }
+                }
+                upload = upload_rx.recv() => {
+                    if let Some(req) = upload {
+                        if let Ok(data) = std::fs::read(&req.file_path) {
+                            let name = Path::new(&req.file_path)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("file");
+                            let file_id = format!("up_{:x}", std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default().as_nanos());
+                            let start = serde_json::json!({
+                                "type": "file_upload_start", "file_id": file_id,
+                                "name": name, "size": data.len(),
+                            });
+                            let _ = write.send(Message::Text(start.to_string())).await;
+                            let _ = write.send(Message::Binary(data)).await;
+                            let end = serde_json::json!({
+                                "type": "file_upload_end", "file_id": file_id,
+                            });
+                            let _ = write.send(Message::Text(end.to_string())).await;
+                        } else {
+                            log::error!("Upload: failed to read {}", req.file_path);
+                        }
+                    } else {
+                        // channel closed, stop listening
+                        log::info!("[WSClient] upload_rx closed, breaking inner loop");
+                        break 'inner;
+                    }
+                }
+                signal = signal_rx.recv() => {
+                    if let Some(req) = signal {
+                        if req.name == "__copilot_clear__" {
+                            if let Some(signal_name) = req.data.get("clear_signal").and_then(|v| v.as_str()) {
+                                let clear_msg = serde_json::json!({
+                                    "type": "signal_clear",
+                                    "name": signal_name,
+                                });
+                                log::info!("Signal clear: {}", signal_name);
+                                let _ = write.send(Message::Text(clear_msg.to_string())).await;
+                            }
+                            continue;
+                        }
+                        let msg = serde_json::json!({
+                            "type": "signal",
+                            "name": req.name,
+                            "sticky": req.sticky,
+                            "priority": req.priority,
+                            "notify_once": req.notify_once,
+                            "data": req.data,
+                        });
+                        log::info!("Signal triggered: {} (sticky={}, priority={})", req.name, req.sticky, req.priority);
+                        let _ = write.send(Message::Text(msg.to_string())).await;
+                    } else {
+                        log::info!("[WSClient] signal_rx closed, breaking inner loop");
+                        break 'inner;
+                    }
+                }
+                Some(()) = re_register_rx.recv() => {
+                    log::info!("Re-registering tools after permission change");
+                    let defs = crate::tool_manager_defs();
+                    let tools_msg = serde_json::json!({
+                        "type": "register_tools",
+                        "tools": defs.iter().map(|t| serde_json::json!({
+                            "name": t.name,
+                            "description": t.description,
+                            "inputSchema": t.input_schema,
+                        })).collect::<Vec<_>>(),
+                    });
+                    let _ = write.send(Message::Text(tools_msg.to_string())).await;
+                }
+                Some((request_id, tool_name, result)) = tool_done_rx.recv() => {
+                    if result.is_error {
+                        log::info!("[WSClient] >>> sending error tool_result for request_id={}", request_id);
+                        let response = serde_json::json!({
+                            "type": "tool_result",
+                            "request_id": &request_id,
+                            "content": result.content,
+                            "is_error": true,
+                        });
+                        let _ = write.send(Message::Text(response.to_string())).await;
+                        let _ = event_tx.send(WsEvent::ToolCallCompleted {
+                            name: tool_name,
+                            is_error: true,
+                        }).await;
+                    } else if let Some(ref upload_path) = result.upload_path {
+                        log::info!("[WSClient] >>> upload path present: {} (will upload before tool_result)", upload_path);
+                        let name = std::path::Path::new(upload_path)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("screenshot.png");
+                        let up = upload_path.clone();
+                        let read_result = tokio::task::spawn_blocking(move || {
+                            std::fs::read(&up)
+                        }).await;
+                        match read_result {
+                            Ok(Ok(data)) => {
+                                let file_id = format!("up_{:x}", std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default().as_nanos());
+                                let data_len = data.len();
+                                log::info!("[WSClient] uploading {} bytes as file_id={}", data_len, file_id);
+
+                                let start_upload = std::time::Instant::now();
+                                let start = serde_json::json!({
+                                    "type": "file_upload_start",
+                                    "file_id": file_id,
+                                    "name": name,
+                                    "size": data_len,
+                                });
+                                let _ = write.send(Message::Text(start.to_string())).await;
+                                let _ = write.send(Message::Binary(data)).await;
+                                let end = serde_json::json!({
+                                    "type": "file_upload_end",
+                                    "file_id": file_id,
+                                });
+                                let _ = write.send(Message::Text(end.to_string())).await;
+                                log::info!("[WSClient] upload frames sent in {:?}, waiting for file_upload_result...",
+                                    start_upload.elapsed());
+
+                                pending_tool_results.insert(file_id, PendingToolResult {
+                                    request_id,
+                                    file_name: name.to_string(),
+                                    tool_name: tool_name.clone(),
+                                    local_path: upload_path.to_string(),
+                                });
+                            }
+                            Ok(Err(e)) => {
+                                log::info!("[WSClient] read upload file failed: {}", e);
+                                let response = serde_json::json!({
+                                    "type": "tool_result",
+                                    "request_id": &request_id,
+                                    "content": [{
+                                        "type": "text",
+                                        "text": format!("❌ 读取文件失败: {}", e),
+                                    }],
+                                    "is_error": true,
+                                });
+                                let _ = write.send(Message::Text(response.to_string())).await;
+                                let _ = event_tx.send(WsEvent::ToolCallCompleted {
+                                    name: tool_name,
+                                    is_error: true,
+                                }).await;
+                            }
+                            Err(e) => {
+                                log::info!("[WSClient] spawn_blocking for file read panicked: {}", e);
+                                let response = serde_json::json!({
+                                    "type": "tool_result",
+                                    "request_id": &request_id,
+                                    "content": [{
+                                        "type": "text",
+                                        "text": format!("❌ 文件读取线程异常: {}", e),
+                                    }],
+                                    "is_error": true,
+                                });
+                                let _ = write.send(Message::Text(response.to_string())).await;
+                                let _ = event_tx.send(WsEvent::ToolCallCompleted {
+                                    name: tool_name,
+                                    is_error: true,
+                                }).await;
+                            }
+                        }
+                    } else {
+                        log::info!("[WSClient] >>> sending direct tool_result for request_id={}", request_id);
+                        let response = serde_json::json!({
+                            "type": "tool_result",
+                            "request_id": &request_id,
+                            "content": result.content,
+                            "is_error": false,
+                        });
+                        let _ = write.send(Message::Text(response.to_string())).await;
+                        let _ = event_tx.send(WsEvent::ToolCallCompleted {
+                            name: tool_name.clone(),
+                            is_error: false,
+                        }).await;
+                        // 工具执行成功后自动发送关联信号
+                        if let Some(signal) = crate::signal_emitter::signal_for_tool(&tool_name) {
+                            log::info!("[WSClient] auto-signal: {} (tool={})", signal.name(), tool_name);
+                            let _ = write.send(Message::Text(signal.to_ws_message())).await;
+                        }
+                    }
+                }
+                msg = read.next() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            log::info!("[WSClient] received text frame: len={}, preview={}",
+                                text.len(), &text[..text.len().min(120)]);
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                                match val["type"].as_str() {
+                                    Some("auth_result") => {
+                                        if val["ok"].as_bool().unwrap_or(false) {
+                                            log::info!("[WSClient] auth_result: ok=true, registering tools...");
+                                            let defs = crate::tool_manager_defs();
+                                            log::info!("[WSClient] registering {} tools", defs.len());
+                                            let tools_msg = serde_json::json!({
+                                                "type": "register_tools",
+                                                "tools": defs.iter().map(|t| serde_json::json!({
+                                                    "name": t.name,
+                                                    "description": t.description,
+                                                    "inputSchema": t.input_schema,
+                                                })).collect::<Vec<_>>(),
+                                            });
+                                            let _ = write.send(Message::Text(tools_msg.to_string())).await;
+                                            log::info!("[WSClient] register_tools sent");
+                                        } else {
+                                            let err = val["error"].as_str().unwrap_or("unknown");
+                                            log::info!("[WSClient] auth_result: ok=false, error={}", err);
+                                            let _ = event_tx
+                                                .send(WsEvent::Error(format!("Auth failed: {}", err)))
+                                                .await;
+                                            break 'inner;
+                                        }
+                                    }
+                                    Some("pong") => {} // 心跳响应
+                                    Some("file_meta") => {
+                                        let file_id = val["file_id"].as_str().unwrap_or("").to_string();
+                                        let name = val["name"].as_str().unwrap_or("unknown").to_string();
+                                        let size = val["size"].as_u64().unwrap_or(0);
+                                        log::info!("[WSClient] file_meta: id={} name={} size={}", file_id, name, size);
+                                        file_receive_state = Some(file_handler::FileReceive::new(
+                                            file_id, name, size,
+                                        ));
+                                    }
+                                    Some("file_end") => {
+                                        log::info!("[WSClient] file_end received, processing...");
+                                        if let Some(state) = file_receive_state.take() {
+                                            let checksum = val["checksum"].as_str().unwrap_or("");
+                                            let file_id_s = val["file_id"].as_str().unwrap_or("").to_string();
+                                            let file_data = state.data;
+                                            let file_name = state.name;
+                                            let file_size = state.size;
+                                            log::info!("[WSClient] file_end: id={} name={} received={} expected={}",
+                                                file_id_s, file_name, file_data.len(), file_size);
+
+                                            if file_data.len() as u64 != file_size {
+                                                log::info!("[WSClient] file size mismatch: {} != {}", file_data.len(), file_size);
+                                                let _ = event_tx.send(WsEvent::Error(
+                                                    format!("File size mismatch: received {} bytes, expected {} bytes",
+                                                        file_data.len(), file_size),
+                                                )).await;
+                                                let _ = write.send(Message::Text(serde_json::json!({
+                                                    "type": "file_ack",
+                                                    "file_id": file_id_s,
+                                                    "status": "error",
+                                                    "error": "size mismatch",
+                                                }).to_string().into())).await;
+                                                continue;
+                                            }
+
+                                            let mut hasher = sha2::Sha256::new();
+                                            hasher.update(&file_data);
+                                            let hash_hex = format!("sha256:{:x}", hasher.finalize());
+                                            if !checksum.is_empty() && hash_hex != checksum {
+                                                log::info!("[WSClient] checksum mismatch: local={} remote={}", hash_hex, checksum);
+                                                let _ = event_tx.send(WsEvent::Error(
+                                                    "Checksum mismatch".to_string(),
+                                                )).await;
+                                                let _ = write.send(Message::Text(serde_json::json!({
+                                                    "type": "file_ack",
+                                                    "file_id": file_id_s,
+                                                    "status": "error",
+                                                    "error": "checksum mismatch",
+                                                }).to_string().into())).await;
+                                            } else {
+                                                log::info!("[WSClient] file received OK, checksum verified, forwarding to frontend");
+                                                let _ = event_tx.send(WsEvent::FileReceived {
+                                                    name: file_name,
+                                                    size: file_data.len() as u64,
+                                                    data: file_data,
+                                                }).await;
+                                                let _ = write.send(Message::Text(serde_json::json!({
+                                                    "type": "file_ack",
+                                                    "file_id": file_id_s,
+                                                    "status": "ok",
+                                                }).to_string().into())).await;
+                                            }
+                                        } else {
+                                            log::info!("[WSClient] file_end but no receive state");
+                                        }
+                                    }
+                                    Some("register_tools_result") => {
+                                        let count = val["registered"].as_u64().unwrap_or(0);
+                                        log::info!("[WSClient] register_tools_result: {} tools accepted", count);
+                                    }
+                                    Some("file_upload_start_ack") => {
+                                        // 服务端确认上传开始，等待 file_upload_result
+                                    }
+                                    Some("file_upload_result") => {
+                                        let file_id = val["file_id"].as_str().unwrap_or("").to_string();
+                                        log::info!("[WSClient] file_upload_result: id={} ok={}", file_id, val["ok"]);
+                                        if let Some(pending) = pending_tool_results.remove(&file_id) {
+                                            let ok = val["ok"].as_bool().unwrap_or(false);
+                                            let display_path = if ok {
+                                                val["path"].as_str().unwrap_or(&pending.file_name)
+                                            } else {
+                                                &pending.file_name
+                                            };
+                                            log::info!("[WSClient] sending tool_result after upload: request_id={} ok={} path={}",
+                                                pending.request_id, ok, display_path);
+                                            let tool_label = match pending.tool_name.as_str() {
+                                                "take_screenshot" => "截图",
+                                                "pull_file" => "文件",
+                                                _ => "文件",
+                                            };
+                                            let response = serde_json::json!({
+                                                "type": "tool_result",
+                                                "request_id": pending.request_id,
+                                                "content": [{
+                                                    "type": "text",
+                                                    "text": format!(
+                                                        "{}已保存到本地: {}\n已上传到服务端: {}",
+                                                        tool_label, pending.local_path, display_path,
+                                                    ),
+                                                }],
+                                                "is_error": !ok,
+                                            });
+                                            let _ = write.send(Message::Text(response.to_string())).await;
+                                            let _ = event_tx.send(WsEvent::ToolCallCompleted {
+                                                name: pending.tool_name.clone(),
+                                                is_error: !ok,
+                                            }).await;
+                                            // 上传成功后自动发送关联信号
+                                            if ok {
+                                                if let Some(signal) = crate::signal_emitter::signal_for_tool(&pending.tool_name) {
+                                                    log::info!("[WSClient] auto-signal after upload: {} (tool={})", signal.name(), pending.tool_name);
+                                                    let _ = write.send(Message::Text(signal.to_ws_message())).await;
+                                                }
+                                            }
+                                            log::info!("[WSClient] tool_result sent after upload");
+                                        } else {
+                                            let ok = val["ok"].as_bool().unwrap_or(false);
+                                            if ok {
+                                                let path = val["path"].as_str().unwrap_or("");
+                                                log::info!("[WSClient] upload complete (no pending tool): path={}", path);
+                                            } else {
+                                                let err = val["error"].as_str().unwrap_or("unknown");
+                                                log::info!("[WSClient] upload failed: {}", err);
+                                            }
+                                        }
+                                    }
+                                    Some("call_tool") => {
+                                        let request_id = val["request_id"].as_str().unwrap_or("").to_string();
+                                        let tool_name = val["name"].as_str().unwrap_or("").to_string();
+                                        let args = val.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+                                        log::info!("[WSClient] <<< call_tool: request_id={} tool={} args={}",
+                                            request_id, tool_name, args);
+
+                                        let _ = event_tx.send(WsEvent::ToolCallStarted {
+                                            name: tool_name.clone(),
+                                        }).await;
+
+                                        // 把耗时的 execute_tool 移到 spawn_blocking 中，
+                                        // 避免阻塞 select loop 导致心跳超时。
+                                        let tool_done = tool_done_tx.clone();
+                                        let tn = tool_name.clone();
+                                        let a = args.clone();
+                                        let tn_for_blocking = tn.clone();
+                                        tokio::spawn(async move {
+                                            let start_exec = std::time::Instant::now();
+                                            let result = tokio::task::spawn_blocking(move || {
+                                                crate::tool_executor::execute_tool(&tn_for_blocking, &a)
+                                            }).await.unwrap_or_else(|e| {
+                                                crate::tool_executor::ToolResult::err(
+                                                    format!("Tool execution panicked: {}", e),
+                                                )
+                                            });
+                                            log::info!("[WSClient] execute_tool done: elapsed={:?}, is_error={}, has_upload={}",
+                                                start_exec.elapsed(), result.is_error, result.upload_path.is_some());
+                                            let _ = tool_done.send((request_id, tn, result)).await;
+                                        });
+                                    }
+                                    Some("acp_inject") => {
+                                        if let Some(text) = val["text"].as_str() {
+                                            let text_preview = &text[..text.len().min(80)];
+                                            log::info!("[WSClient] acp_inject: preview={}", text_preview);
+                                            if event_tx.try_send(WsEvent::AcpInject {
+                                                text: text.to_string(),
+                                            }).is_err() {
+                                                log::error!("[WSClient] acp_inject: event channel full or closed");
+                                            }
+                                        }
+                                    }
+                                    Some("signal_ack") => {
+                                        // 服务端确认收到信号，不需要额外处理
+                                    }
+                                    Some(unknown) => {
+                                        log::info!("[WSClient] unknown message type: {}", unknown);
+                                    }
+                                    None => {
+                                        log::info!("[WSClient] message without type field");
+                                    }
+                                }
+                            } else {
+                                log::info!("[WSClient] failed to parse JSON: preview={}", &text[..text.len().min(80)]);
+                            }
+                        }
+                        Some(Ok(Message::Binary(data))) => {
+                            log::info!("[WSClient] binary frame: {} bytes", data.len());
+                            if let Some(ref mut state) = file_receive_state {
+                                state.append_data(data);
+                            } else {
+                                log::info!("[WSClient] binary frame but no file_receive_state");
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) => {
+                            log::info!("[WSClient] connection closed by server (Close frame)");
+                            break 'inner;
+                        }
+                        Some(Err(e)) => {
+                            log::info!("[WSClient] WebSocket error: {}", e);
+                            let _ = event_tx
+                                .send(WsEvent::Error(format!("WebSocket error: {}", e)))
+                                .await;
+                            break 'inner;
+                        }
+                        None => {
+                            log::info!("[WSClient] read stream ended (None)");
+                            break 'inner;
+                        }
+                        Some(Ok(Message::Ping(data))) => {
+                            // 必须回复 Pong，否则服务端 ping_timeout=10 后会断开连接
+                            let _ = write.send(Message::Pong(data)).await;
+                        }
+                        Some(Ok(Message::Pong(_))) => {
+                            // WebSocket 协议层 Pong 响应
+                        }
+                        _ => {
+                            log::info!("[WSClient] unexpected message type");
+                        }
+                    }
+                }
+
+            }
+        }
+
+        log::info!("[WSClient] inner loop exited, sending Disconnected event");
+        let _ = event_tx.send(WsEvent::Disconnected).await;
+
+        log::info!("[WSClient] reconnecting in {}s (max delay {}s)", retry_delay, RECONNECT_MAX_DELAY);
+        tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay)).await;
+        retry_delay = (retry_delay * 2).min(RECONNECT_MAX_DELAY);
+        log::info!("[WSClient] next retry_delay={}s", retry_delay);
+    }
+}

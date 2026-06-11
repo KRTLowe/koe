@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.egg-info/
+*.egg
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+dist/
+
+# Rust
+target/
+
+# Node
+node_modules/
+
+# Build output
+dist/
+*.tar.gz
+*.log
+
+# OpenCode internal
+.omo/
+
+# Brainstorming visual companion artifacts
+.superpowers/
+.worktrees/
