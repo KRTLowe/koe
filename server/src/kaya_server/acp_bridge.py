@@ -50,18 +50,36 @@ async def start_acp_bridge(port: int = 8765) -> None:
         buf.clear()
 
         async def _fwd():
+            fwd_count = 0
+            buf = b""
             try:
                 while True:
-                    line = await proc.stdout.readline()
-                    if not line: break
-                    text = line.decode(errors="replace").rstrip()
-                    if not text: continue
-                    for b in _reconnect_buffers.values():
-                        b.append(text)
-                        if len(b) > 200: b.pop(0)
-                    try: await ws.send(text)
-                    except Exception: break
-            except Exception: pass
+                    # read() 替代 readline()——opencode 的 JSON-RPC 消息可能单行超过 64KB
+                    chunk = await proc.stdout.read(65536)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    # 按行拆分，最后一段不完整的话留到下一轮
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        text = line.decode(errors="replace").rstrip()
+                        if not text:
+                            continue
+                        for b in _reconnect_buffers.values():
+                            b.append(text)
+                            if len(b) > 200: b.pop(0)
+                        try:
+                            await ws.send(text)
+                        except Exception as e:
+                            logger.warning("ACP _fwd() ws.send failed for %s: %s", cid, e)
+                            return
+                        fwd_count += 1
+                        if fwd_count == 1:
+                            logger.info("ACP _fwd() started forwarding for %s", cid)
+                        elif fwd_count % 20 == 0:
+                            logger.info("ACP _fwd() forwarded %d lines for %s", fwd_count, cid)
+            except Exception as e:
+                logger.warning("ACP _fwd() exception for %s: %s", cid, e)
             finally:
                 # _fwd() 退出意味着服务端→客户端方向断了。
                 # 关掉 ws 强制客户端重连，让 _reconnect_buffers 里积压的消息能倒出来。
