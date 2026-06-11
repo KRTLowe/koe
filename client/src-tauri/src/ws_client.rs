@@ -1,5 +1,6 @@
 use crate::config::AppConfig;
 use crate::file_handler;
+use crate::protocol::ClientboundMessage;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
@@ -378,10 +379,10 @@ pub async fn run_client(
                         Some(Ok(Message::Text(text))) => {
                             log::info!("[WSClient] received text frame: len={}, preview={}",
                                 text.len(), safe_truncate(&text, 120));
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-                                match val["type"].as_str() {
-                                    Some("auth_result") => {
-                                        if val["ok"].as_bool().unwrap_or(false) {
+                            if let Ok(message) = ClientboundMessage::parse_text(&text) {
+                                match message {
+                                    ClientboundMessage::AuthResult { ok, error } => {
+                                        if ok {
                                             log::info!("[WSClient] auth_result: ok=true, registering tools...");
                                             let defs = crate::tool_manager_defs();
                                             log::info!("[WSClient] registering {} tools", defs.len());
@@ -396,7 +397,7 @@ pub async fn run_client(
                                             let _ = write.send(Message::Text(tools_msg.to_string())).await;
                                             log::info!("[WSClient] register_tools sent");
                                         } else {
-                                            let err = val["error"].as_str().unwrap_or("unknown");
+                                            let err = error.unwrap_or_else(|| "unknown".to_string());
                                             log::info!("[WSClient] auth_result: ok=false, error={}", err);
                                             let _ = event_tx
                                                 .send(WsEvent::Error(format!("Auth failed: {}", err)))
@@ -404,21 +405,17 @@ pub async fn run_client(
                                             break 'inner;
                                         }
                                     }
-                                    Some("pong") => {} // 心跳响应
-                                    Some("file_meta") => {
-                                        let file_id = val["file_id"].as_str().unwrap_or("").to_string();
-                                        let name = val["name"].as_str().unwrap_or("unknown").to_string();
-                                        let size = val["size"].as_u64().unwrap_or(0);
+                                    ClientboundMessage::Pong => {} // 心跳响应
+                                    ClientboundMessage::FileMeta { file_id, name, size } => {
                                         log::info!("[WSClient] file_meta: id={} name={} size={}", file_id, name, size);
                                         file_receive_state = Some(file_handler::FileReceive::new(
                                             file_id, name, size,
                                         ));
                                     }
-                                    Some("file_end") => {
+                                    ClientboundMessage::FileEnd { file_id, checksum } => {
                                         log::info!("[WSClient] file_end received, processing...");
                                         if let Some(state) = file_receive_state.take() {
-                                            let checksum = val["checksum"].as_str().unwrap_or("");
-                                            let file_id_s = val["file_id"].as_str().unwrap_or("").to_string();
+                                            let file_id_s = file_id;
                                             let file_data = state.data;
                                             let file_name = state.name;
                                             let file_size = state.size;
@@ -471,20 +468,17 @@ pub async fn run_client(
                                             log::info!("[WSClient] file_end but no receive state");
                                         }
                                     }
-                                    Some("register_tools_result") => {
-                                        let count = val["registered"].as_u64().unwrap_or(0);
-                                        log::info!("[WSClient] register_tools_result: {} tools accepted", count);
+                                    ClientboundMessage::RegisterToolsResult { registered } => {
+                                        log::info!("[WSClient] register_tools_result: {} tools accepted", registered);
                                     }
-                                    Some("file_upload_start_ack") => {
+                                    ClientboundMessage::FileUploadStartAck => {
                                         // 服务端确认上传开始，等待 file_upload_result
                                     }
-                                    Some("file_upload_result") => {
-                                        let file_id = val["file_id"].as_str().unwrap_or("").to_string();
-                                        log::info!("[WSClient] file_upload_result: id={} ok={}", file_id, val["ok"]);
+                                    ClientboundMessage::FileUploadResult { file_id, ok, path, error } => {
+                                        log::info!("[WSClient] file_upload_result: id={} ok={}", file_id, ok);
                                         if let Some(pending) = pending_tool_results.remove(&file_id) {
-                                            let ok = val["ok"].as_bool().unwrap_or(false);
                                             let display_path = if ok {
-                                                val["path"].as_str().unwrap_or(&pending.file_name)
+                                                path.as_deref().unwrap_or(&pending.file_name)
                                             } else {
                                                 &pending.file_name
                                             };
@@ -521,20 +515,17 @@ pub async fn run_client(
                                             }
                                             log::info!("[WSClient] tool_result sent after upload");
                                         } else {
-                                            let ok = val["ok"].as_bool().unwrap_or(false);
                                             if ok {
-                                                let path = val["path"].as_str().unwrap_or("");
-                                                log::info!("[WSClient] upload complete (no pending tool): path={}", path);
+                                                log::info!("[WSClient] upload complete (no pending tool): path={}", path.unwrap_or_default());
                                             } else {
-                                                let err = val["error"].as_str().unwrap_or("unknown");
+                                                let err = error.unwrap_or_else(|| "unknown".to_string());
                                                 log::info!("[WSClient] upload failed: {}", err);
                                             }
                                         }
                                     }
-                                    Some("call_tool") => {
-                                        let request_id = val["request_id"].as_str().unwrap_or("").to_string();
-                                        let tool_name = val["name"].as_str().unwrap_or("").to_string();
-                                        let args = val.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+                                    ClientboundMessage::CallTool { request_id, name, arguments } => {
+                                        let tool_name = name;
+                                        let args = arguments;
                                         log::info!("[WSClient] <<< call_tool: request_id={} tool={} args={}",
                                             request_id, tool_name, args);
 
@@ -562,24 +553,24 @@ pub async fn run_client(
                                             let _ = tool_done.send((request_id, tn, result)).await;
                                         });
                                     }
-                                    Some("acp_inject") => {
-                                        if let Some(text) = val["text"].as_str() {
-                                            let text_preview = safe_truncate(text, 80);
+                                    ClientboundMessage::AcpInject { text } => {
+                                        if !text.is_empty() {
+                                            let text_preview = safe_truncate(&text, 80);
                                             log::info!("[WSClient] acp_inject: preview={}", text_preview);
                                             if event_tx.try_send(WsEvent::AcpInject {
-                                                text: text.to_string(),
+                                                text,
                                             }).is_err() {
                                                 log::error!("[WSClient] acp_inject: event channel full or closed");
                                             }
                                         }
                                     }
-                                    Some("signal_ack") => {
+                                    ClientboundMessage::SignalAck => {
                                         // 服务端确认收到信号，不需要额外处理
                                     }
-                                    Some(unknown) => {
-                                        log::info!("[WSClient] unknown message type: {}", unknown);
+                                    ClientboundMessage::Unknown { message_type } => {
+                                        log::info!("[WSClient] unknown message type: {}", message_type);
                                     }
-                                    None => {
+                                    ClientboundMessage::MissingType => {
                                         log::info!("[WSClient] message without type field");
                                     }
                                 }

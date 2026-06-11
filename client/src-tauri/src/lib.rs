@@ -8,6 +8,7 @@ mod ws_client;
 mod acp_client;
 mod tool_executor;
 mod signal_emitter;
+mod protocol;
 mod tools;
 
 use config::{AppConfig, load_config as load_config_impl, save_config as save_config_impl};
