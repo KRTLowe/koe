@@ -176,6 +176,13 @@ pub async fn run_client(
                         log::info!("[WSClient] ping failed, reconnecting");
                         break 'inner;
                     }
+                    // 应用层 heartbeat：服务端 ConnectionManager 只认 {"type": "heartbeat"}
+                    if write.send(Message::Text(
+                        r#"{"type":"heartbeat"}"#.into(),
+                    )).await.is_err() {
+                        log::info!("[WSClient] heartbeat send failed");
+                        break 'inner;
+                    }
                 }
                 upload = upload_rx.recv() => {
                     if let Some(req) = upload {
