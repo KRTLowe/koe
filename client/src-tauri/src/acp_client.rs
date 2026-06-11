@@ -201,6 +201,7 @@ pub async fn run_acp_client(
         // 僵尸检测共享状态
         let last_real_activity: Cell<Instant> = Cell::new(Instant::now());
         let last_ping_ok = AtomicBool::new(true);
+        let last_pong: Cell<Instant> = Cell::new(Instant::now());
         let health_result: Arc<Mutex<Option<HealthStatus>>> = Arc::new(Mutex::new(None));
         let mut zombie_state: Option<Instant> = None; // 非阻塞僵尸检测：记录检查开始时间
 
@@ -292,6 +293,10 @@ pub async fn run_acp_client(
                     // ── 协议层 Ping ──────────────────────
                     if out_tx.send(WriterMsg::Ping).is_err() {
                         break 'inner;
+                    }
+                    // 超过 30s 没收到 Pong → 标记协议层已死
+                    if last_pong.get().elapsed() > Duration::from_secs(30) {
+                        last_ping_ok.store(false, Ordering::Relaxed);
                     }
                 }
                 user_msg = msg_rx.recv(), if msg_rx_open => {
@@ -514,6 +519,7 @@ pub async fn run_acp_client(
                         }
                         Some(Ok(Message::Pong(_))) => {
                             last_ping_ok.store(true, Ordering::Relaxed);
+                            last_pong.set(Instant::now());
                         }
                         Some(Ok(Message::Close(_))) => break 'inner,
                         Some(Err(e)) => {
