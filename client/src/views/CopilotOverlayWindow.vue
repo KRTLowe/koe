@@ -72,7 +72,7 @@ async function doExecute(q: string) {
 
     if (mode.value === "single") {
       status.value = "sent";
-      setTimeout(() => closeWindow(), 2000);
+      setTimeout(() => dismissWindow(), 2000);
     }
   } catch (e: any) {
     status.value = "error";
@@ -101,6 +101,16 @@ async function closeWindow() {
   try {
     await invoke("cancel_copilot");
   } catch { /* ignore */ }
+  try {
+    await invoke("copilot_close");
+  } catch { /* ignore */ }
+}
+
+async function dismissWindow() {
+  if (countdownTimer) {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+  }
   try {
     await invoke("copilot_close");
   } catch { /* ignore */ }
