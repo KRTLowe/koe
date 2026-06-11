@@ -6,6 +6,7 @@ mod notify;
 mod tray;
 mod ws_client;
 mod acp_client;
+mod acp_runtime;
 mod tool_executor;
 mod signal_emitter;
 mod protocol;
@@ -18,6 +19,7 @@ use bubble::{
     close_bubble_by_label, create_message_bubble, resize_bubble, take_bubble_content, BubbleInfo,
 };
 use config::{AppConfig, load_config as load_config_impl, save_config as save_config_impl};
+use acp_runtime::acp_url_from_config;
 use overlay::{
     close_tool_call_overlay, copilot_close, copilot_enter_monitor, quick_chat_close,
     toggle_copilot_window, toggle_quick_chat,
@@ -91,22 +93,6 @@ pub(crate) struct AppState {
     pub(crate) displayed: Mutex<String>,
     /// "Kaya is thinking…" 气泡的 label，文字到达时关闭
     pub(crate) thinking_bubble_label: Mutex<Option<String>>,
-}
-
-/// 从配置获取 ACP 桥接地址，优先使用独立配置
-fn acp_url_from_config(config: &AppConfig) -> String {
-    if let Some(ref acp_url) = config.acp_url {
-        if !acp_url.is_empty() {
-            return acp_url.clone();
-        }
-    }
-    // 回退：从 server_url 推导
-    if let Some(rest) = config.server_url.strip_prefix("ws://") {
-        if let Some(host) = rest.split(':').next() {
-            return format!("ws://{}:8765", host);
-        }
-    }
-    "ws://127.0.0.1:8765".to_string()
 }
 
 fn start_acp_client(app: &AppHandle, config: &AppConfig, shared_signal_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<ws_client::SignalRequest>>>>) {
