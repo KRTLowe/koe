@@ -79,6 +79,9 @@ def cleanup_orphans():
 
 # ── 主程序 ──────────────────────────────────────────
 
+# 模块级变量，handle_cmd 闭包访问
+signal_registry = None
+
 async def handle_cmd(reader, writer):
     """Unix socket 命令处理。"""
     try:
@@ -205,6 +208,7 @@ async def main():
     db.initialize()
     cm = ConnectionManager()
     tool_registry = ToolRegistry()
+    global signal_registry
     signal_registry = SignalRegistry()
 
     register_signal_handlers(tool_registry)
