@@ -82,6 +82,8 @@ struct AppState {
     debounce_last: Mutex<Instant>,
     /// 已通过气泡展示的 display 文本（用于前缀 diff）
     displayed: Mutex<String>,
+    /// "Kaya is thinking…" 气泡的 label，文字到达时关闭
+    thinking_bubble_label: Mutex<Option<String>>,
 }
 
 fn start_ws_client(app: &AppHandle, config: AppConfig, shared_signal_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<ws_client::SignalRequest>>>>) {
@@ -250,12 +252,35 @@ fn start_acp_client(app: &AppHandle, config: &AppConfig, shared_signal_tx: Arc<M
                     *state.debounce_thinking.lock().unwrap() = response_thinking.clone();
                     *state.debounce_text.lock().unwrap() = response_text.clone();
                     *state.debounce_last.lock().unwrap() = Instant::now();
+
+                    // ── thinking 状态气泡 ──
+                    // 只有在 thinking 流有内容、text 流还没开始时才展示
+                    if !response_thinking.trim().is_empty() && response_text.trim().is_empty() {
+                        let mut label = state.thinking_bubble_label.lock().unwrap();
+                        if label.is_none() {
+                            let lbl = create_message_bubble(&handle, "Kaya is thinking…");
+                            *label = Some(lbl);
+                        }
+                    } else if !response_text.trim().is_empty() {
+                        // text 开始输出 → 关闭 thinking 气泡（如果还开着）
+                        let mut label = state.thinking_bubble_label.lock().unwrap();
+                        if let Some(lbl) = label.take() {
+                            drop(label);
+                            close_bubble_by_label(&handle, &lbl);
+                        }
+                    }
                 }
                 acp_client::AcpEvent::ResponseDone => {
                     let _ = handle.emit("acp-done", serde_json::json!({"done": true}));
                     // 回复完成，立即冲刷去抖缓冲（把 last 设到过去让下一个 tick 直接触发）
                     let state = handle.state::<AppState>();
                     *state.debounce_last.lock().unwrap() = Instant::now() - Duration::from_secs(10);
+                    // 关闭 thinking 气泡（防止只有 thinking 没有 text 的边界情况）
+                    let mut label = state.thinking_bubble_label.lock().unwrap();
+                    if let Some(lbl) = label.take() {
+                        drop(label);
+                        close_bubble_by_label(&handle, &lbl);
+                    }
                 }
                 acp_client::AcpEvent::SessionReady { session_id } => {
                     if let Some(s) = handle.try_state::<AppState>() {
@@ -825,10 +850,9 @@ fn resize_bubble(
     Ok(())
 }
 
-/// 创建消息气泡窗口并加入气泡栈
-fn create_message_bubble(app: &AppHandle, content: &str) {
+/// 创建消息气泡窗口并加入气泡栈。返回气泡 label，便于后续关闭。
+fn create_message_bubble(app: &AppHandle, content: &str) -> String {
     let bubble_width = 338.0;
-    let gap = 8.0;
     let state = app.state::<AppState>();
 
     // 1. 生成 label 并存储内容
@@ -855,6 +879,18 @@ fn create_message_bubble(app: &AppHandle, content: &str) {
 
     // 4. 全量重算所有气泡位置（自动处理多列换行）
     reposition_all(app);
+
+    label
+}
+
+/// 按 label 关闭一个气泡并从状态中移除。
+fn close_bubble_by_label(app: &AppHandle, label: &str) {
+    let state = app.state::<AppState>();
+    state.bubble_content.lock().unwrap().remove(label);
+    state.active_bubbles.lock().unwrap().retain(|b| b.label != label);
+    if let Some(win) = app.get_webview_window(label) {
+        let _ = win.close();
+    }
 }
 
 pub fn run() {
@@ -958,6 +994,7 @@ pub fn run() {
             debounce_text: Mutex::new(String::new()),
             debounce_last: Mutex::new(Instant::now()),
             displayed: Mutex::new(String::new()),
+            thinking_bubble_label: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             load_config, save_config, get_connection_status,
@@ -1142,6 +1179,8 @@ pub fn run() {
                             }
                         }
                         state.displayed.lock().unwrap().clear();
+                        // thinking 气泡也被清理了，重置追踪状态
+                        *state.thinking_bubble_label.lock().unwrap() = None;
                     }
                 }
             });
