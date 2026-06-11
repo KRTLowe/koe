@@ -287,6 +287,7 @@ pub async fn run_acp_client(
                     match user_msg {
                         Some(text) => {
                             // HEALTH: 结果处理（来自 check_acp_health 信号的 acp_inject 回复）
+                            // 直接就地处理，不等心跳 tick —— 避免 15s 超时在 25s 心跳间隔内先行触发
                             if text.starts_with("HEALTH:") {
                                 let status = if text.contains("HEALTH:healthy") {
                                     HealthStatus::Healthy
@@ -295,7 +296,45 @@ pub async fn run_acp_client(
                                 } else {
                                     HealthStatus::Stuck
                                 };
-                                let _ = health_result.lock().map(|mut r| *r = Some(status));
+                                log::info!("[ACP] health check result: {:?} (text={})", status, &text[..text.len().min(80)]);
+                                match status {
+                                    HealthStatus::Healthy => {
+                                        last_real_activity.set(Instant::now());
+                                        zombie_state = None;
+                                    }
+                                    HealthStatus::Dead | HealthStatus::Stuck => {
+                                        if last_ping_ok.load(Ordering::Relaxed) {
+                                            if let Some(ref sid) = session_id {
+                                                log::info!("[ACP] zombie: ws alive, recovering in-place");
+                                                let cancel = serde_json::json!({
+                                                    "jsonrpc":"2.0","method":"session/cancel",
+                                                    "params":{"sessionId":sid}
+                                                });
+                                                ws_send!(format!("{}\n", cancel));
+                                                tokio::time::sleep(Duration::from_millis(300)).await;
+                                                let recovery = "[系统通知] 连接中断后已恢复。请用几句话简述你刚才做了什么、得出什么结论、下一步要做什么。";
+                                                let recovery_id = next_id; next_id += 1;
+                                                let req = serde_json::json!({
+                                                    "jsonrpc":"2.0","id":recovery_id,"method":"session/prompt",
+                                                    "params":{"sessionId":sid,"prompt":[{"type":"text","text":recovery}]}
+                                                });
+                                                response_text.clear();
+                                                response_thinking.clear();
+                                                last_prompt_id = Some(recovery_id);
+                                                ws_send!(format!("{}\n", req));
+                                                log::info!("[ACP] zombie: recovery prompt sent (id={})", recovery_id);
+                                                last_real_activity.set(Instant::now());
+                                        } else {
+                                            break 'inner;
+                                        }
+                                        } else {
+                                            log::info!("[ACP] zombie: ws dead, reconnecting");
+                                            break 'inner;
+                                        }
+                                        zombie_state = None;
+                                    }
+                                    HealthStatus::Timeout => {}
+                                }
                                 continue;
                             }
                             if text == "__cancel__" {
