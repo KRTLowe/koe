@@ -50,10 +50,7 @@ impl Tool for OpenPathTool {
     }
 
     fn execute(&self, args: &Value) -> ToolResult {
-        let path = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
         if path.is_empty() {
             return ToolResult::err("path is required".to_string());

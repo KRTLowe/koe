@@ -65,10 +65,7 @@ impl Tool for UiaTreeTool {
         let start = std::time::Instant::now();
         log::info!("[UiaTreeTool] execute begin: enabled={}", self.enabled);
 
-        let max_depth = args
-            .get("max_depth")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(6) as i32;
+        let max_depth = args.get("max_depth").and_then(|v| v.as_i64()).unwrap_or(6) as i32;
         let max_items = args
             .get("max_items")
             .and_then(|v| v.as_u64())

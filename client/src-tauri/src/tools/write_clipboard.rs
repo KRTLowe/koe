@@ -50,10 +50,7 @@ impl Tool for WriteClipboardTool {
     }
 
     fn execute(&self, args: &Value) -> ToolResult {
-        let text = args
-            .get("text")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
 
         if text.is_empty() {
             return ToolResult::err("text is required".to_string());

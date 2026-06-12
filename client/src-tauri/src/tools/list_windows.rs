@@ -68,13 +68,20 @@ unsafe extern "system" fn enum_proc(hwnd: isize, _lp: isize) -> i32 {
 
     let mut buf: Vec<u16> = vec![0; (len + 1) as usize];
     GetWindowTextW(hwnd, buf.as_mut_ptr(), len + 1);
-    let title = String::from_utf16_lossy(&buf[..len as usize]).trim().to_string();
+    let title = String::from_utf16_lossy(&buf[..len as usize])
+        .trim()
+        .to_string();
 
     if title.is_empty() {
         return 1;
     }
 
-    let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
     GetWindowRect(hwnd, &mut rect);
 
     let mut pid: u32 = 0;
@@ -156,7 +163,10 @@ impl Tool for ListWindowsTool {
             log::info!("[ListWindows] enumerating...");
 
             let filter = args.get("filter").and_then(|v| v.as_str()).unwrap_or("");
-            let max_results = args.get("max_results").and_then(|v| v.as_u64()).unwrap_or(30) as usize;
+            let max_results = args
+                .get("max_results")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(30) as usize;
             let filter_lower = filter.to_lowercase();
 
             let windows = enumerate_windows();
@@ -168,9 +178,7 @@ impl Tool for ListWindowsTool {
                 if count >= max_results {
                     break;
                 }
-                if !filter_lower.is_empty()
-                    && !w.title.to_lowercase().contains(&filter_lower)
-                {
+                if !filter_lower.is_empty() && !w.title.to_lowercase().contains(&filter_lower) {
                     continue;
                 }
                 lines.push(format!(
@@ -180,8 +188,12 @@ impl Tool for ListWindowsTool {
                 count += 1;
             }
 
-            log::info!("[ListWindows] done: elapsed={:?}, total={}, matched={}",
-                start.elapsed(), windows.len(), count);
+            log::info!(
+                "[ListWindows] done: elapsed={:?}, total={}, matched={}",
+                start.elapsed(),
+                windows.len(),
+                count
+            );
 
             if lines.is_empty() {
                 if filter_lower.is_empty() {
@@ -189,13 +201,15 @@ impl Tool for ListWindowsTool {
                 } else {
                     ToolResult::ok(format!(
                         "No windows matching '{}' ({} total visible windows)",
-                        filter, windows.len(),
+                        filter,
+                        windows.len(),
                     ))
                 }
             } else {
                 let summary = format!(
                     "{} windows ({} total visible)\n\n{}",
-                    count, windows.len(),
+                    count,
+                    windows.len(),
                     lines.join("\n"),
                 );
                 ToolResult::ok(summary)

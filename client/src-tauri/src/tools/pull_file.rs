@@ -1,8 +1,8 @@
 use serde_json::Value;
 
+use super::path_guard::PathGuard;
 use super::{Tool, ToolResult};
 use crate::config::AppConfig;
-use super::path_guard::PathGuard;
 
 pub struct PullFileTool {
     enabled: bool,
@@ -86,10 +86,7 @@ impl Tool for PullFileTool {
                 .unwrap_or_else(|| "unknown".to_string());
             let size = meta.len();
 
-            log::info!(
-                "[PullFileTool] pulling: {} ({} bytes)",
-                path_str, size
-            );
+            log::info!("[PullFileTool] pulling: {} ({} bytes)", path_str, size);
 
             ToolResult::ok_with_upload(
                 format!("正在从客户端拉取文件: {} ({} bytes)", file_name, size),

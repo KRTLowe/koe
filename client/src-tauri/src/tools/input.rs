@@ -48,7 +48,9 @@ mod win32 {
 #[cfg(target_os = "windows")]
 fn press_vk(vk: u8, hold: bool) {
     let flags = if hold { 0 } else { win32::KEYEVENTF_KEYUP };
-    unsafe { win32::keybd_event(vk, 0, flags, 0); }
+    unsafe {
+        win32::keybd_event(vk, 0, flags, 0);
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -145,8 +147,10 @@ fn parse_key_combo(combo: &str) -> Result<Vec<(u8, bool)>, String> {
     // 修饰键释放（逆序），先收集再追加
     let mut releases: Vec<(u8, bool)> = Vec::new();
     for &(vk, _) in keys.iter().rev() {
-        if vk == win32::VK_CONTROL || vk == win32::VK_MENU
-            || vk == win32::VK_SHIFT || vk == win32::VK_LWIN
+        if vk == win32::VK_CONTROL
+            || vk == win32::VK_MENU
+            || vk == win32::VK_SHIFT
+            || vk == win32::VK_LWIN
         {
             releases.push((vk, false));
         }
@@ -176,13 +180,19 @@ pub struct TypeTextTool {
 impl TypeTextTool {
     pub fn new(config: &AppConfig) -> Self {
         Self {
-            enabled: config.tool_permissions.get("type_text").copied().unwrap_or(false),
+            enabled: config
+                .tool_permissions
+                .get("type_text")
+                .copied()
+                .unwrap_or(false),
         }
     }
 }
 
 impl Tool for TypeTextTool {
-    fn name(&self) -> &'static str { "type_text" }
+    fn name(&self) -> &'static str {
+        "type_text"
+    }
     fn description(&self) -> &'static str {
         "Type text at the current keyboard focus. Supports all characters (Chinese, emoji etc. via clipboard paste). \
          Make sure the target window has focus before calling this."
@@ -196,8 +206,12 @@ impl Tool for TypeTextTool {
             "required": ["text"]
         })
     }
-    fn is_enabled(&self) -> bool { self.enabled }
-    fn set_enabled(&mut self, e: bool) { self.enabled = e; }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    fn set_enabled(&mut self, e: bool) {
+        self.enabled = e;
+    }
 
     fn execute(&self, args: &Value) -> ToolResult {
         #[cfg(not(target_os = "windows"))]
@@ -213,7 +227,15 @@ impl Tool for TypeTextTool {
             }
             log::info!("[TypeText] typing {} chars", text.len());
 
-            let all_ascii = text.chars().all(|c| c.is_ascii() && (c.is_alphanumeric() || c.is_ascii_punctuation() || c == ' ' || c == '\n' || c == '\r' || c == '\t'));
+            let all_ascii = text.chars().all(|c| {
+                c.is_ascii()
+                    && (c.is_alphanumeric()
+                        || c.is_ascii_punctuation()
+                        || c == ' '
+                        || c == '\n'
+                        || c == '\r'
+                        || c == '\t')
+            });
 
             if all_ascii {
                 let mut skipped = 0;
@@ -223,7 +245,11 @@ impl Tool for TypeTextTool {
                     }
                 }
                 if skipped > 0 {
-                    ToolResult::ok(format!("已输入 {} 字符（{} 个不支持跳过）", text.len() - skipped, skipped))
+                    ToolResult::ok(format!(
+                        "已输入 {} 字符（{} 个不支持跳过）",
+                        text.len() - skipped,
+                        skipped
+                    ))
                 } else {
                     ToolResult::ok(format!("已输入 {} 字符", text.len()))
                 }
@@ -256,13 +282,19 @@ pub struct KeyPressTool {
 impl KeyPressTool {
     pub fn new(config: &AppConfig) -> Self {
         Self {
-            enabled: config.tool_permissions.get("key_press").copied().unwrap_or(false),
+            enabled: config
+                .tool_permissions
+                .get("key_press")
+                .copied()
+                .unwrap_or(false),
         }
     }
 }
 
 impl Tool for KeyPressTool {
-    fn name(&self) -> &'static str { "key_press" }
+    fn name(&self) -> &'static str {
+        "key_press"
+    }
     fn description(&self) -> &'static str {
         "Press a key or key combination. Examples: enter, tab, escape, ctrl+c, alt+tab, f5, ctrl+shift+esc"
     }
@@ -275,8 +307,12 @@ impl Tool for KeyPressTool {
             "required": ["keys"]
         })
     }
-    fn is_enabled(&self) -> bool { self.enabled }
-    fn set_enabled(&mut self, e: bool) { self.enabled = e; }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    fn set_enabled(&mut self, e: bool) {
+        self.enabled = e;
+    }
 
     fn execute(&self, args: &Value) -> ToolResult {
         #[cfg(not(target_os = "windows"))]
@@ -308,13 +344,19 @@ pub struct MouseClickTool {
 impl MouseClickTool {
     pub fn new(config: &AppConfig) -> Self {
         Self {
-            enabled: config.tool_permissions.get("mouse_click").copied().unwrap_or(false),
+            enabled: config
+                .tool_permissions
+                .get("mouse_click")
+                .copied()
+                .unwrap_or(false),
         }
     }
 }
 
 impl Tool for MouseClickTool {
-    fn name(&self) -> &'static str { "mouse_click" }
+    fn name(&self) -> &'static str {
+        "mouse_click"
+    }
     fn description(&self) -> &'static str {
         "Move mouse to screen coordinates and click. Use list_windows + take_screenshot to find coordinates. \
          Coordinates are absolute screen pixels."
@@ -331,8 +373,12 @@ impl Tool for MouseClickTool {
             "required": ["x", "y"]
         })
     }
-    fn is_enabled(&self) -> bool { self.enabled }
-    fn set_enabled(&mut self, e: bool) { self.enabled = e; }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    fn set_enabled(&mut self, e: bool) {
+        self.enabled = e;
+    }
 
     fn execute(&self, args: &Value) -> ToolResult {
         #[cfg(not(target_os = "windows"))]
@@ -344,12 +390,23 @@ impl Tool for MouseClickTool {
         {
             let x = args.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let y = args.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let button = args.get("button").and_then(|v| v.as_str()).unwrap_or("left");
+            let button = args
+                .get("button")
+                .and_then(|v| v.as_str())
+                .unwrap_or("left");
             let clicks = args.get("clicks").and_then(|v| v.as_u64()).unwrap_or(1);
 
-            log::info!("[MouseClick] x={} y={} button={} clicks={}", x, y, button, clicks);
+            log::info!(
+                "[MouseClick] x={} y={} button={} clicks={}",
+                x,
+                y,
+                button,
+                clicks
+            );
 
-            unsafe { win32::SetCursorPos(x, y); }
+            unsafe {
+                win32::SetCursorPos(x, y);
+            }
             std::thread::sleep(std::time::Duration::from_millis(20));
 
             let (down, up) = match button {

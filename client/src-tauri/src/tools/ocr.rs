@@ -11,7 +11,11 @@ pub struct OcrTool {
 impl OcrTool {
     pub fn new(config: &AppConfig) -> Self {
         Self {
-            enabled: config.tool_permissions.get("ocr_region").copied().unwrap_or(true),
+            enabled: config
+                .tool_permissions
+                .get("ocr_region")
+                .copied()
+                .unwrap_or(true),
         }
     }
 }
@@ -61,7 +65,11 @@ fn parse_tesseract_tsv(tsv: &str) -> Option<Vec<OcrWord>> {
             confidence: conf,
         });
     }
-    if words.is_empty() { None } else { Some(words) }
+    if words.is_empty() {
+        None
+    } else {
+        Some(words)
+    }
 }
 
 // ── Windows OCR fallback ────────────────────────────
@@ -78,7 +86,11 @@ fn ocr_windows(path: &str) -> Option<Vec<OcrWord>> {
 
     match windows_ocr_inner(path) {
         Ok(words) => {
-            if words.is_empty() { None } else { Some(words) }
+            if words.is_empty() {
+                None
+            } else {
+                Some(words)
+            }
         }
         Err(e) => {
             log::info!("[OCR] Windows OCR failed: {}", e);
@@ -164,7 +176,9 @@ struct OcrWord {
     confidence: f64,
 }
 
-fn is_zero(f: &f64) -> bool { f64::abs(*f) < f64::EPSILON }
+fn is_zero(f: &f64) -> bool {
+    f64::abs(*f) < f64::EPSILON
+}
 
 // ── Tool impl ───────────────────────────────────────
 
@@ -206,7 +220,10 @@ impl Tool for OcrTool {
 
     fn execute(&self, args: &Value) -> ToolResult {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-        let lang = args.get("lang").and_then(|v| v.as_str()).unwrap_or("chi_sim+eng");
+        let lang = args
+            .get("lang")
+            .and_then(|v| v.as_str())
+            .unwrap_or("chi_sim+eng");
 
         if path.is_empty() {
             return ToolResult::err("path is required".to_string());
@@ -230,7 +247,8 @@ impl Tool for OcrTool {
 
         match words {
             Some((words, engine)) => {
-                let text = words.iter()
+                let text = words
+                    .iter()
                     .map(|w| w.text.as_str())
                     .collect::<Vec<_>>()
                     .join("");

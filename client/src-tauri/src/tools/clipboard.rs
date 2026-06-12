@@ -59,46 +59,48 @@ impl Tool for ClipboardTool {
         log::info!("[ClipboardTool] format={}", format);
 
         let result = match format {
-            "text" => {
-                match arboard::Clipboard::new() {
-                    Ok(mut clipboard) => {
-                        log::info!("[ClipboardTool] clipboard opened");
-                        match clipboard.get_text() {
-                            Ok(text) => {
-                                if text.is_empty() {
-                                    log::info!("[ClipboardTool] clipboard empty");
-                                    ToolResult::ok("Clipboard is empty".to_string())
-                                } else {
-                                    log::info!("[ClipboardTool] clipboard text: {} chars", text.len());
-                                    ToolResult::ok(text)
-                                }
+            "text" => match arboard::Clipboard::new() {
+                Ok(mut clipboard) => {
+                    log::info!("[ClipboardTool] clipboard opened");
+                    match clipboard.get_text() {
+                        Ok(text) => {
+                            if text.is_empty() {
+                                log::info!("[ClipboardTool] clipboard empty");
+                                ToolResult::ok("Clipboard is empty".to_string())
+                            } else {
+                                log::info!("[ClipboardTool] clipboard text: {} chars", text.len());
+                                ToolResult::ok(text)
                             }
-                            Err(e) => {
-                                log::info!("[ClipboardTool] get_text failed: {}", e);
-                                ToolResult::err(format!("Failed to read clipboard text: {}", e))
-                            },
+                        }
+                        Err(e) => {
+                            log::info!("[ClipboardTool] get_text failed: {}", e);
+                            ToolResult::err(format!("Failed to read clipboard text: {}", e))
                         }
                     }
-                    Err(e) => {
-                        log::info!("[ClipboardTool] Clipboard::new failed: {}", e);
-                        ToolResult::err(format!("Clipboard access failed: {}", e))
-                    },
                 }
-            }
+                Err(e) => {
+                    log::info!("[ClipboardTool] Clipboard::new failed: {}", e);
+                    ToolResult::err(format!("Clipboard access failed: {}", e))
+                }
+            },
             "image" => {
                 log::info!("[ClipboardTool] image format requested, unsupported");
                 ToolResult::err(
-                    "Clipboard image format is not yet supported, use format=\"text\" instead".to_string(),
+                    "Clipboard image format is not yet supported, use format=\"text\" instead"
+                        .to_string(),
                 )
             }
             _ => {
                 log::info!("[ClipboardTool] unknown format: {}", format);
                 ToolResult::err(format!("Unknown clipboard format: {}", format))
-            },
+            }
         };
 
-        log::info!("[ClipboardTool] execute end: elapsed={:?}, is_error={}",
-            start.elapsed(), result.is_error);
+        log::info!(
+            "[ClipboardTool] execute end: elapsed={:?}, is_error={}",
+            start.elapsed(),
+            result.is_error
+        );
         result
     }
 }

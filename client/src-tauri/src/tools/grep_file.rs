@@ -1,11 +1,11 @@
 use serde_json::Value;
-use walkdir::WalkDir;
-use std::io::{BufRead, BufReader};
 use std::fs::File;
+use std::io::{BufRead, BufReader};
+use walkdir::WalkDir;
 
+use super::path_guard::PathGuard;
 use super::{Tool, ToolResult};
 use crate::config::AppConfig;
-use super::path_guard::PathGuard;
 
 pub struct GrepFileTool {
     enabled: bool,
@@ -85,10 +85,7 @@ impl Tool for GrepFileTool {
 
         let result = (|| -> ToolResult {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let pattern = args
-                .get("pattern")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
             let use_regex = args
                 .get("use_regex")
                 .and_then(|v| v.as_bool())
@@ -97,10 +94,7 @@ impl Tool for GrepFileTool {
                 .get("case_sensitive")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let include = args
-                .get("include")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let include = args.get("include").and_then(|v| v.as_str()).unwrap_or("");
             let max_results = args
                 .get("max_results")
                 .and_then(|v| v.as_u64())
@@ -161,9 +155,7 @@ impl Tool for GrepFileTool {
             };
 
             if files.is_empty() {
-                return ToolResult::ok(
-                    "没有找到匹配的文件（路径下无可搜索文件）".to_string(),
-                );
+                return ToolResult::ok("没有找到匹配的文件（路径下无可搜索文件）".to_string());
             }
 
             let mut output_lines: Vec<String> = Vec::new();
@@ -205,12 +197,7 @@ impl Tool for GrepFileTool {
                         Err(_) => continue,
                     };
                     let line_num = i + 1;
-                    let matched = line_matches(
-                        &line,
-                        pattern,
-                        &regex_pattern,
-                        case_sensitive,
-                    );
+                    let matched = line_matches(&line, pattern, &regex_pattern, case_sensitive);
                     all_lines.push(line);
                     if matched {
                         match_lines.push(line_num);
@@ -243,15 +230,8 @@ impl Tool for GrepFileTool {
 
                         for ln in print_start..=print_end {
                             let line_text = &all_lines[ln - 1];
-                            let sep = if match_set.contains(&ln) {
-                                ":"
-                            } else {
-                                "-"
-                            };
-                            output_lines.push(format!(
-                                "{}{}{}",
-                                file_display, sep, line_text
-                            ));
+                            let sep = if match_set.contains(&ln) { ":" } else { "-" };
+                            output_lines.push(format!("{}{}{}", file_display, sep, line_text));
                             if match_set.contains(&ln) {
                                 total_matches += 1;
                             }
@@ -268,7 +248,9 @@ impl Tool for GrepFileTool {
                         if match_set.contains(&ln) {
                             output_lines.push(format!(
                                 "{}:{}: {}",
-                                file_display, ln, all_lines[ln - 1]
+                                file_display,
+                                ln,
+                                all_lines[ln - 1]
                             ));
                             total_matches += 1;
                         }
