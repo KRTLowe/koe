@@ -20,10 +20,42 @@ from kaya_server.signal_handlers import register_all as register_signal_handlers
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 500 * 1024 * 1024
+FILE_CHUNK_SIZE = 1024 * 1024
 ACK_TIMEOUT = 30.0  # 等待客户端 file_ack 的超时秒数
 
 # 上传文件保存根目录
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "transfers")
+
+
+def safe_upload_filename(name: str) -> str:
+    filename = os.path.basename(name.replace("\\", "/"))
+    if filename in {"", ".", ".."}:
+        return "unknown"
+    return filename
+
+
+def upload_month_dir() -> Path:
+    from datetime import datetime
+
+    now = datetime.now()
+    date_dir = Path(UPLOAD_DIR) / f"{now.year:04d}-{now.month:02d}"
+    date_dir.mkdir(parents=True, exist_ok=True)
+    return date_dir
+
+
+def unique_upload_path(directory: Path, name: str) -> Path:
+    from datetime import datetime
+
+    candidate = directory / name
+    if not candidate.exists():
+        return candidate
+    stem, ext = os.path.splitext(name)
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    return directory / f"{stem}_{timestamp}_{uuid.uuid4().hex[:8]}{ext}"
+
+
+def upload_temp_path(directory: Path) -> Path:
+    return directory / f".upload-{uuid.uuid4().hex}.part"
 
 
 class UploadState:
@@ -32,20 +64,42 @@ class UploadState:
     # 允许超出声明的字节数（防止因传输层分帧导致的轻微超额）
     SIZE_GRACE = 1024 * 1024  # 1MB
 
-    def __init__(self, file_id: str, name: str, size: int):
+    def __init__(
+        self, file_id: str, name: str, size: int, temp_path: Path, final_path: Path,
+    ):
         self.file_id = file_id
         self.name = name
         self.size = size
-        self.data = bytearray()
+        self.temp_path = temp_path
+        self.final_path = final_path
+        self.bytes_received = 0
+        self._file = temp_path.open("wb")
 
     def append(self, chunk: bytes) -> bool:
         """追加二进制数据。超过上限（size + grace）返回 False。"""
-        self.data.extend(chunk)
-        return len(self.data) <= self.size + self.SIZE_GRACE
+        self._file.write(chunk)
+        self.bytes_received += len(chunk)
+        return self.bytes_received <= self.size + self.SIZE_GRACE
 
     @property
     def over_limit(self) -> bool:
-        return len(self.data) > self.size + self.SIZE_GRACE
+        return self.bytes_received > self.size + self.SIZE_GRACE
+
+    def finalize(self) -> Path:
+        self._file.close()
+        if self.bytes_received != self.size:
+            self.temp_path.unlink(missing_ok=True)
+            raise ValueError(
+                f"File size mismatch: received {self.bytes_received} bytes, "
+                f"expected {self.size} bytes"
+            )
+        self.temp_path.replace(self.final_path)
+        return self.final_path
+
+    def abort(self) -> None:
+        if not self._file.closed:
+            self._file.close()
+        self.temp_path.unlink(missing_ok=True)
 
 
 class WebSocketHandler:
@@ -107,12 +161,20 @@ class WebSocketHandler:
                 # 二进制帧 = 上传文件内容
                 if isinstance(message, bytes):
                     if client_id and client_id in self._uploads:
-                        if not self._uploads[client_id].append(message):
+                        state = self._uploads[client_id]
+                        if not state.append(message):
                             # 超出上限，断开连接
                             logger.warning(
                                 f"Upload from {client_id} exceeded size limit, disconnecting"
                             )
                             self._uploads.pop(client_id, None)
+                            state.abort()
+                            await websocket.send(json.dumps({
+                                "type": "file_upload_result",
+                                "file_id": state.file_id,
+                                "ok": False,
+                                "error": "Upload exceeded declared size limit",
+                            }))
                             break
                     continue
 
@@ -126,6 +188,9 @@ class WebSocketHandler:
                     self.cm.update_heartbeat(client_id)
 
                 if msg_type == "auth":
+                    if client_id:
+                        logger.warning("Ignoring duplicate auth message from %s", client_id)
+                        continue
                     client_id = data.get("client_id")
                     passkey = data.get("passkey")
                     if await self._authenticate(client_id, passkey):
@@ -186,7 +251,7 @@ class WebSocketHandler:
                         }))
                         continue
                     file_id = data.get("file_id", "")
-                    name = data.get("name", "unknown")
+                    name = safe_upload_filename(data.get("name", "unknown"))
                     size = data.get("size", 0)
                     if size > MAX_FILE_SIZE:
                         await websocket.send(json.dumps({
@@ -194,7 +259,12 @@ class WebSocketHandler:
                             "ok": False, "error": f"File too large: {size} (max {MAX_FILE_SIZE})",
                         }))
                         continue
-                    self._uploads[client_id] = UploadState(file_id, name, size)
+                    date_dir = upload_month_dir()
+                    final_path = unique_upload_path(date_dir, name)
+                    temp_path = upload_temp_path(date_dir)
+                    self._uploads[client_id] = UploadState(
+                        file_id, name, size, temp_path, final_path,
+                    )
                     await websocket.send(json.dumps({
                         "type": "file_upload_start_ack", "file_id": file_id, "ok": True,
                     }))
@@ -203,26 +273,25 @@ class WebSocketHandler:
                     if not client_id or client_id not in self._uploads:
                         continue
                     state = self._uploads.pop(client_id)
-                    # 保存到 transfers/YYYY-MM/
-                    from datetime import datetime
-                    now = datetime.now()
-                    date_dir = os.path.join(UPLOAD_DIR, f"{now.year:04d}-{now.month:02d}")
-                    os.makedirs(date_dir, exist_ok=True)
-                    path = os.path.join(date_dir, state.name)
-                    # 同名加时间戳
-                    if os.path.exists(path):
-                        stem, ext = os.path.splitext(state.name)
-                        path = os.path.join(date_dir, f"{stem}_{now.strftime('%Y%m%d%H%M%S')}{ext}")
                     try:
-                        with open(path, "wb") as f:
-                            f.write(state.data)
+                        if data.get("file_id") != state.file_id:
+                            state.abort()
+                            await websocket.send(json.dumps({
+                                "type": "file_upload_result",
+                                "file_id": data.get("file_id", ""),
+                                "ok": False,
+                                "error": "file_id mismatch",
+                            }))
+                            continue
+                        path = state.finalize()
                         await websocket.send(json.dumps({
                             "type": "file_upload_result", "file_id": state.file_id,
-                            "ok": True, "path": path, "name": state.name,
-                            "size": len(state.data),
+                            "ok": True, "path": str(path), "name": state.name,
+                            "size": state.bytes_received,
                         }))
                         logger.info(f"Upload saved: {path} from {client_id}")
-                    except IOError as e:
+                    except (IOError, ValueError) as e:
+                        state.abort()
                         await websocket.send(json.dumps({
                             "type": "file_upload_result", "file_id": state.file_id,
                             "ok": False, "error": f"Save failed: {e}",
@@ -260,7 +329,9 @@ class WebSocketHandler:
             logger.warning(f"Invalid JSON from {client_id}")
         finally:
             if client_id:
-                self._uploads.pop(client_id, None)
+                state = self._uploads.pop(client_id, None)
+                if state:
+                    state.abort()
                 self.cm.unregister(client_id)
                 self.signal_registry.clear_client(client_id)
                 if self.tool_registry:
@@ -336,37 +407,42 @@ class WebSocketHandler:
             return {"ok": False, "error": f"Failed to open file: {e}"}
 
         try:
-            st_size = os.fstat(fd.fileno()).st_size
-            if st_size > MAX_FILE_SIZE:
-                return {"ok": False, "error": f"File too large: {st_size} bytes (max {MAX_FILE_SIZE})"}
+            with fd:
+                st_size = os.fstat(fd.fileno()).st_size
+                if st_size > MAX_FILE_SIZE:
+                    return {
+                        "ok": False,
+                        "error": f"File too large: {st_size} bytes (max {MAX_FILE_SIZE})",
+                    }
 
-            file_data = fd.read()
+                file_id = f"f_{uuid.uuid4().hex[:12]}"
+                file_name = path.name
+                file_size = st_size
+                hasher = hashlib.sha256()
+
+                meta = json.dumps({
+                    "type": "file_meta",
+                    "file_id": file_id,
+                    "name": file_name,
+                    "size": file_size,
+                })
+                await ws.send(meta)
+
+                while True:
+                    chunk = fd.read(FILE_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                    await ws.send(chunk)
+
+                end = json.dumps({
+                    "type": "file_end",
+                    "file_id": file_id,
+                    "checksum": f"sha256:{hasher.hexdigest()}",
+                })
+                await ws.send(end)
         except IOError as e:
             return {"ok": False, "error": f"Failed to read file: {e}"}
-        finally:
-            fd.close()
-
-        file_id = f"f_{uuid.uuid4().hex[:12]}"
-        file_name = path.name
-        file_size = len(file_data)
-        checksum = hashlib.sha256(file_data).hexdigest()
-
-        # 三帧传输：元数据 → 二进制 → 结束
-        meta = json.dumps({
-            "type": "file_meta",
-            "file_id": file_id,
-            "name": file_name,
-            "size": file_size,
-        })
-        end = json.dumps({
-            "type": "file_end",
-            "file_id": file_id,
-            "checksum": f"sha256:{checksum}",
-        })
-
-        await ws.send(meta)
-        await ws.send(file_data)  # 二进制帧
-        await ws.send(end)
 
         # 等待客户端 ack（超时不算失败，记录日志即可——文件可能已到达但 ack 丢了）
         ack = await self._wait_for_ack(file_id)

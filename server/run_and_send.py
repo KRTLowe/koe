@@ -26,6 +26,10 @@ ACP_PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 8765
 logger = logging.getLogger("run_and_send")
 
 
+def set_command_socket_permissions(socket_path: str) -> None:
+    os.chmod(socket_path, 0o600)
+
+
 # ── 孤儿 ACP 进程清理（手动） ─────────────────────────
 # cleanup_orphans 保留作手动应急用。可通过 Unix socket 发送 cleanup_acp 命令触发。
 
@@ -224,7 +228,7 @@ async def main():
     if os.path.exists(SOCKET_PATH):
         os.unlink(SOCKET_PATH)
     server = await asyncio.start_unix_server(handle_cmd, path=SOCKET_PATH)
-    os.chmod(SOCKET_PATH, 0o777)
+    set_command_socket_permissions(SOCKET_PATH)
     print(f"Cmd socket on {SOCKET_PATH}", flush=True)
 
     try:
