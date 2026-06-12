@@ -160,6 +160,8 @@ class WebSocketHandler:
             async for message in websocket:
                 # 二进制帧 = 上传文件内容
                 if isinstance(message, bytes):
+                    if client_id:
+                        self.cm.update_heartbeat(client_id)
                     if client_id and client_id in self._uploads:
                         state = self._uploads[client_id]
                         if not state.append(message):

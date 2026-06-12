@@ -70,12 +70,23 @@ mod upload_tests {
         assert_eq!(read_next_chunk(&mut file, 3).unwrap(), Some(b"gh".to_vec()));
         assert_eq!(read_next_chunk(&mut file, 3).unwrap(), None);
     }
+
+    #[test]
+    fn upload_heartbeat_is_due_after_interval() {
+        let interval = std::time::Duration::from_secs(20);
+        let now = std::time::Instant::now();
+
+        assert!(!upload_heartbeat_due(now, now, interval));
+        assert!(!upload_heartbeat_due(now + interval - std::time::Duration::from_millis(1), now, interval));
+        assert!(upload_heartbeat_due(now + interval, now, interval));
+    }
 }
 
 /// 指数退避重连延迟（秒）
 const RECONNECT_BASE_DELAY: u64 = 1;
 const RECONNECT_MAX_DELAY: u64 = 60;
 const FILE_CHUNK_SIZE: usize = 1024 * 1024;
+const UPLOAD_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
 
 fn read_next_chunk(file: &mut std::fs::File, chunk_size: usize) -> Result<Option<Vec<u8>>, String> {
     use std::io::Read;
@@ -87,6 +98,14 @@ fn read_next_chunk(file: &mut std::fs::File, chunk_size: usize) -> Result<Option
     }
     buf.truncate(read);
     Ok(Some(buf))
+}
+
+fn upload_heartbeat_due(
+    now: std::time::Instant,
+    last_sent: std::time::Instant,
+    interval: std::time::Duration,
+) -> bool {
+    now.duration_since(last_sent) >= interval
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -277,6 +296,7 @@ pub async fn run_client(
                             "name": name, "size": size,
                         });
                         let _ = write.send(Message::Text(start.to_string())).await;
+                        let mut last_upload_heartbeat = std::time::Instant::now();
                         loop {
                             let chunk = match read_next_chunk(&mut file, FILE_CHUNK_SIZE) {
                                 Ok(Some(chunk)) => chunk,
@@ -288,6 +308,16 @@ pub async fn run_client(
                             };
                             if write.send(Message::Binary(chunk)).await.is_err() {
                                 break 'inner;
+                            }
+                            let now = std::time::Instant::now();
+                            if upload_heartbeat_due(now, last_upload_heartbeat, UPLOAD_HEARTBEAT_INTERVAL) {
+                                if write.send(Message::Ping(vec![].into())).await.is_err() {
+                                    break 'inner;
+                                }
+                                if write.send(Message::Text(r#"{"type":"heartbeat"}"#.into())).await.is_err() {
+                                    break 'inner;
+                                }
+                                last_upload_heartbeat = now;
                             }
                         }
                         let end = serde_json::json!({
@@ -416,6 +446,7 @@ pub async fn run_client(
                                     "size": size,
                                 });
                                 let _ = write.send(Message::Text(start.to_string())).await;
+                                let mut last_upload_heartbeat = std::time::Instant::now();
                                 loop {
                                     let chunk = match read_next_chunk(&mut file, FILE_CHUNK_SIZE) {
                                         Ok(Some(chunk)) => chunk,
@@ -441,6 +472,16 @@ pub async fn run_client(
                                     };
                                     if write.send(Message::Binary(chunk)).await.is_err() {
                                         break 'inner;
+                                    }
+                                    let now = std::time::Instant::now();
+                                    if upload_heartbeat_due(now, last_upload_heartbeat, UPLOAD_HEARTBEAT_INTERVAL) {
+                                        if write.send(Message::Ping(vec![].into())).await.is_err() {
+                                            break 'inner;
+                                        }
+                                        if write.send(Message::Text(r#"{"type":"heartbeat"}"#.into())).await.is_err() {
+                                            break 'inner;
+                                        }
+                                        last_upload_heartbeat = now;
                                     }
                                 }
                                 let end = serde_json::json!({

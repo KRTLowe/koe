@@ -327,6 +327,34 @@ class TestFileUploadSecurity:
         assert saved_path.read_bytes() == b"abcdefgh"
         assert not list(tmp_path.rglob("*.part"))
 
+    async def test_upload_binary_frames_refresh_heartbeat(
+        self, handler, db, cm, tmp_path,
+    ):
+        import kaya_server.ws_handler as ws_handler
+
+        h = hash_passkey("secret")
+        db.register_client("pc-01", "Test PC", h)
+        websocket = FakeWebSocket(
+            [
+                json.dumps({"type": "auth", "client_id": "pc-01", "passkey": "secret"}),
+                json.dumps({
+                    "type": "file_upload_start",
+                    "file_id": "up_1",
+                    "name": "stream.txt",
+                    "size": 8,
+                }),
+                b"abc",
+                b"defgh",
+                json.dumps({"type": "file_upload_end", "file_id": "up_1"}),
+            ]
+        )
+
+        with patch.object(ws_handler, "UPLOAD_DIR", str(tmp_path)):
+            with patch.object(cm, "update_heartbeat", wraps=cm.update_heartbeat) as update:
+                await handler._handle_client(websocket)
+
+        assert update.call_count >= 4
+
     async def test_upload_size_mismatch_aborts_temp_file(
         self, handler, db, cm, tmp_path,
     ):
