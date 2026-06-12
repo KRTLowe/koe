@@ -1,35 +1,33 @@
+mod acp_client;
+mod acp_runtime;
+mod bubble;
 mod config;
 mod copilot;
 mod file_handler;
-mod uia_tree;
 mod notify;
-mod tray;
-mod ws_client;
-mod acp_client;
-mod acp_runtime;
-mod tool_executor;
-mod signal_emitter;
-mod protocol;
-mod bubble;
 mod overlay;
-mod ws_runtime;
+mod protocol;
+mod signal_emitter;
+mod tool_executor;
 mod tools;
+mod tray;
+mod uia_tree;
+mod ws_client;
+mod ws_runtime;
 
-use bubble::{create_message_bubble, resize_bubble, take_bubble_content, BubbleInfo};
 use acp_runtime::start_acp_client;
-use config::{AppConfig, load_config as load_config_impl, save_config as save_config_impl};
+use bubble::{create_message_bubble, resize_bubble, take_bubble_content, BubbleInfo};
+use config::{load_config as load_config_impl, save_config as save_config_impl, AppConfig};
 use overlay::{
     close_tool_call_overlay, copilot_close, copilot_enter_monitor, quick_chat_close,
     toggle_copilot_window, toggle_quick_chat,
 };
-use std::sync::{Arc, Mutex};
-use std::sync::OnceLock;
 use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{
-    AppHandle, Emitter, Manager,
-    PhysicalPosition, PhysicalSize,
-    WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tools::ToolManager;
@@ -44,7 +42,10 @@ pub(crate) fn tool_manager_defs() -> Vec<ws_client::ToolDef> {
             if let Ok(mgr) = state.tool_manager.lock() {
                 if let Some(ref mgr) = *mgr {
                     let defs = mgr.enabled_defs();
-                    log::info!("[lib] tool_manager_defs: returning {} tool defs", defs.len());
+                    log::info!(
+                        "[lib] tool_manager_defs: returning {} tool defs",
+                        defs.len()
+                    );
                     return defs;
                 } else {
                     log::info!("[lib] tool_manager_defs: ToolManager not initialized");
@@ -94,7 +95,10 @@ pub(crate) struct AppState {
 }
 
 #[tauri::command]
-fn load_config(state: tauri::State<AppState>, app: tauri::AppHandle) -> Result<Option<AppConfig>, String> {
+fn load_config(
+    state: tauri::State<AppState>,
+    app: tauri::AppHandle,
+) -> Result<Option<AppConfig>, String> {
     let cfg = load_config_impl(&app);
     *state.config.lock().map_err(|e| e.to_string())? = cfg.clone();
     Ok(cfg)
@@ -121,7 +125,9 @@ fn save_config(
             *ws_started = true;
             drop(ws_started);
             *state.acp_started.lock().map_err(|e| e.to_string())? = true;
-            let shared_signal_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<ws_client::SignalRequest>>>> = Arc::new(Mutex::new(None));
+            let shared_signal_tx: Arc<
+                Mutex<Option<tokio::sync::mpsc::Sender<ws_client::SignalRequest>>>,
+            > = Arc::new(Mutex::new(None));
             start_acp_client(&app, &config, shared_signal_tx.clone());
             start_ws_client(&app, config, shared_signal_tx);
         }
@@ -131,7 +137,11 @@ fn save_config(
 
 #[tauri::command]
 fn get_connection_status(state: tauri::State<AppState>) -> Result<String, String> {
-    Ok(state.connection_status.lock().map_err(|e| e.to_string())?.clone())
+    Ok(state
+        .connection_status
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone())
 }
 
 #[tauri::command]
@@ -169,7 +179,11 @@ fn send_acp_message(text: String, state: tauri::State<AppState>) -> Result<(), S
 }
 
 #[tauri::command]
-fn set_tool_enabled(name: String, enabled: bool, state: tauri::State<AppState>) -> Result<(), String> {
+fn set_tool_enabled(
+    name: String,
+    enabled: bool,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
     if let Ok(mut mgr) = state.tool_manager.lock() {
         if let Some(ref mut mgr) = *mgr {
             mgr.set_enabled(&name, enabled);
@@ -203,7 +217,11 @@ fn upload_file(path: String, state: tauri::State<AppState>) -> Result<(), String
 }
 
 #[tauri::command]
-fn upload_file_data(name: String, data: Vec<u8>, state: tauri::State<AppState>) -> Result<(), String> {
+fn upload_file_data(
+    name: String,
+    data: Vec<u8>,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
     let tmp_dir = std::env::temp_dir().join("kaya-beam-uploads");
     std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
     let path = tmp_dir.join(&name);
@@ -212,7 +230,8 @@ fn upload_file_data(name: String, data: Vec<u8>, state: tauri::State<AppState>) 
     if let Some(tx) = tx.as_ref() {
         tx.try_send(ws_client::UploadRequest {
             file_path: path.to_string_lossy().to_string(),
-        }).map_err(|e| format!("上传失败: {}", e))
+        })
+        .map_err(|e| format!("上传失败: {}", e))
     } else {
         Err("WebSocket 客户端未启动".to_string())
     }
@@ -320,15 +339,16 @@ fn start_acp(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(),
 #[tauri::command]
 fn resize_float_window(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("kaya-float") {
-        window.set_size(PhysicalSize::new(width, height)).map_err(|e| e.to_string())?;
+        window
+            .set_size(PhysicalSize::new(width, height))
+            .map_err(|e| e.to_string())?;
         if let Ok(Some(m)) = app.primary_monitor() {
             let logical_h = m.size().height as f64 / m.scale_factor();
             let y = logical_h - height - 48.0;
             let current_pos = window.inner_position().map_err(|e| e.to_string())?;
-            window.set_position(PhysicalPosition::new(
-                current_pos.x,
-                y as i32,
-            )).map_err(|e| e.to_string())?;
+            window
+                .set_position(PhysicalPosition::new(current_pos.x, y as i32))
+                .map_err(|e| e.to_string())?;
         }
     }
     Ok(())
@@ -338,7 +358,10 @@ pub fn run() {
     // 启动诊断：直接写文件（绕过 logger，因为 windows_subsystem=windows 会隐藏 stdout）
     let _ = std::fs::write(
         "kaya-startup.log",
-        format!("STARTUP {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f")),
+        format!(
+            "STARTUP {}\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f")
+        ),
     );
 
     // 自定义 Logger：同时输出到 stdout 和文件
@@ -400,10 +423,7 @@ pub fn run() {
     // panic hook：tokio task 内 panic 默认不打印到 log 文件，这里手动落地
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let msg = format!(
-            "PANIC: {}\n",
-            info.to_string()
-        );
+        let msg = format!("PANIC: {}\n", info.to_string());
         let _ = std::io::stderr().write_all(msg.as_bytes());
         let _ = std::fs::OpenOptions::new()
             .create(true)
@@ -574,8 +594,13 @@ pub fn run() {
                         };
                         // 更新已展示的 display
                         *bg.state::<AppState>().displayed.lock().unwrap() = new_display;
-                        log::info!("[bubble] prefix diff: displayed={} new={} remaining={}",
-                            displayed.len(), new_len, remaining.len());
+                        log::info!(
+                            "[bubble] prefix diff: displayed={} new={} remaining={} remaining_preview={}",
+                            displayed.len(),
+                            new_len,
+                            remaining.len(),
+                            safe_preview(&remaining, 120),
+                        );
                         if remaining.is_empty() {
                             continue;
                         }
@@ -630,4 +655,15 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn safe_preview(s: &str, max_bytes: usize) -> &str {
+    if max_bytes >= s.len() {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }

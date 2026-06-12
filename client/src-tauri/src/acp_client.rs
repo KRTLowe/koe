@@ -1,11 +1,14 @@
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::Value;
+use std::cell::Cell;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use std::cell::Cell;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
-use std::time::{Duration, Instant};
 use url::Url;
 
 /// 从 ACP 消息字段中提取文本内容，兼容三种格式：
@@ -45,9 +48,14 @@ pub enum AcpEvent {
     Connected,
     Disconnected,
     /// 流式 chunk：透传 thinking 和 text 原始字段，不做拼装
-    StreamChunk { response_text: String, response_thinking: String },
+    StreamChunk {
+        response_text: String,
+        response_thinking: String,
+    },
     ResponseDone,
-    SessionReady { session_id: String },
+    SessionReady {
+        session_id: String,
+    },
     Error(String),
 }
 
@@ -71,9 +79,13 @@ type RequestId = u64;
 
 /// 在 &str 的 byte 索引安全截断，保证落在合法字符边界上。
 fn safe_truncate(s: &str, max_bytes: usize) -> &str {
-    if max_bytes >= s.len() { return s; }
+    if max_bytes >= s.len() {
+        return s;
+    }
     let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
     &s[..end]
 }
 
@@ -87,7 +99,6 @@ fn mcp_server_config() -> serde_json::Value {
     serde_json::json!([])
 }
 
-
 pub async fn run_acp_client(
     server_url: String,
     event_tx: mpsc::Sender<AcpEvent>,
@@ -97,7 +108,9 @@ pub async fn run_acp_client(
 ) {
     if let Err(e) = Url::parse(&server_url) {
         log::info!("[ACP] invalid URL: {}", e);
-        let _ = event_tx.send(AcpEvent::Error(format!("Invalid URL: {}", e))).await;
+        let _ = event_tx
+            .send(AcpEvent::Error(format!("Invalid URL: {}", e)))
+            .await;
         return;
     }
 
@@ -108,28 +121,38 @@ pub async fn run_acp_client(
 
     loop {
         connect_attempt += 1;
-        log::info!("[ACP] connection attempt #{} to {} (delay={}s)", connect_attempt, server_url, retry_delay);
+        log::info!(
+            "[ACP] connection attempt #{} to {} (delay={}s)",
+            connect_attempt,
+            server_url,
+            retry_delay
+        );
 
         let connect_result = tokio::time::timeout(
             tokio::time::Duration::from_secs(5),
             connect_async(&server_url),
-        ).await;
+        )
+        .await;
 
         let (ws_stream, _) = match connect_result {
             Ok(Ok(r)) => {
                 log::info!("[ACP] connected on attempt #{}", connect_attempt);
                 r
-            },
+            }
             Ok(Err(e)) => {
                 log::info!("[ACP] connection failed: {}", e);
-                let _ = event_tx.send(AcpEvent::Error(format!("Connection failed: {}", e))).await;
+                let _ = event_tx
+                    .send(AcpEvent::Error(format!("Connection failed: {}", e)))
+                    .await;
                 tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay)).await;
                 retry_delay = (retry_delay * 2).min(RECONNECT_MAX_DELAY);
                 continue;
             }
             Err(_) => {
                 log::info!("[ACP] connection timeout (5s)");
-                let _ = event_tx.send(AcpEvent::Error("连接超时（5 秒）".to_string())).await;
+                let _ = event_tx
+                    .send(AcpEvent::Error("连接超时（5 秒）".to_string()))
+                    .await;
                 tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay)).await;
                 retry_delay = (retry_delay * 2).min(RECONNECT_MAX_DELAY);
                 continue;
@@ -161,7 +184,8 @@ pub async fn run_acp_client(
         });
         log::info!("[ACP] sending initialize (id={})", init_id);
         let init_msg = format!("{}\n", init_req.to_string());
-        match tokio::time::timeout(WRITE_TIMEOUT, write.send(Message::Text(init_msg.into()))).await {
+        match tokio::time::timeout(WRITE_TIMEOUT, write.send(Message::Text(init_msg.into()))).await
+        {
             Ok(Ok(())) => {}
             _ => {
                 log::info!("[ACP] initialize send failed or timed out");
@@ -180,7 +204,10 @@ pub async fn run_acp_client(
                     WriterMsg::Text(s) => Message::Text(s.into()),
                     WriterMsg::Ping => Message::Ping(vec![].into()),
                 };
-                if tokio::time::timeout(WRITE_TIMEOUT, write.send(frame)).await.is_err() {
+                if tokio::time::timeout(WRITE_TIMEOUT, write.send(frame))
+                    .await
+                    .is_err()
+                {
                     log::info!("[ACP] writer: send timed out, exiting");
                     let _ = writer_done_tx.try_send(());
                     break;
@@ -422,19 +449,54 @@ pub async fn run_acp_client(
                                                 match update_type {
                                                     Some("agent_message_chunk") => {
                                                         let content_type = update.get("content").and_then(|c| c.get("type")).and_then(|t| t.as_str());
+                                                        let raw_text_len = update
+                                                            .get("content")
+                                                            .and_then(|c| c.get("text"))
+                                                            .and_then(|t| t.as_str())
+                                                            .map(str::len)
+                                                            .unwrap_or(0);
+                                                        let raw_thinking_len = update
+                                                            .get("content")
+                                                            .and_then(|c| c.get("thinking"))
+                                                            .and_then(|t| t.as_str())
+                                                            .map(str::len)
+                                                            .unwrap_or(0);
+                                                        log::info!(
+                                                            "[ACP][chunk] sessionUpdate=agent_message_chunk content_type={:?} raw_text_len={} raw_thinking_len={}",
+                                                            content_type,
+                                                            raw_text_len,
+                                                            raw_thinking_len,
+                                                        );
                                                         match content_type {
                                                             Some("thinking") => {
                                                                 if let Some(text) = update.get("content").and_then(|c| c.get("thinking")).and_then(|t| t.as_str()) {
                                                                     response_thinking.push_str(text);
+                                                                    log::info!(
+                                                                        "[ACP][chunk] appended thinking: chunk_len={} total_thinking_len={} preview={}",
+                                                                        text.len(),
+                                                                        response_thinking.len(),
+                                                                        safe_truncate(text, 80),
+                                                                    );
                                                                 }
                                                             }
                                                             _ => {
                                                                 // text chunk (default) — also fallback for untyped content
                                                                 if let Some(text) = update.get("content").and_then(|c| c.get("text")).and_then(|t| t.as_str()) {
                                                                     response_text.push_str(text);
+                                                                    log::info!(
+                                                                        "[ACP][chunk] appended text: chunk_len={} total_text_len={} preview={}",
+                                                                        text.len(),
+                                                                        response_text.len(),
+                                                                        safe_truncate(text, 80),
+                                                                    );
                                                                 }
                                                             }
                                                         }
+                                                        log::info!(
+                                                            "[ACP][chunk] emit StreamChunk: total_text_len={} total_thinking_len={}",
+                                                            response_text.len(),
+                                                            response_thinking.len(),
+                                                        );
                                                         // 透传原始字段，不拼装 display
                                                         let _ = event_tx.try_send(AcpEvent::StreamChunk {
                                                             response_text: response_text.clone(),

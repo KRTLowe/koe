@@ -71,9 +71,13 @@ struct PendingToolResult {
 
 /// 在 &str 的 byte 索引安全截断，保证落在合法字符边界上。
 fn safe_truncate(s: &str, max_bytes: usize) -> &str {
-    if max_bytes >= s.len() { return s; }
+    if max_bytes >= s.len() {
+        return s;
+    }
     let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
     &s[..end]
 }
 
@@ -101,8 +105,12 @@ pub async fn run_client(
 
     loop {
         connect_attempt += 1;
-        log::info!("[WSClient] connection attempt #{} to {} (retry_delay={}s)",
-            connect_attempt, config.server_url, retry_delay);
+        log::info!(
+            "[WSClient] connection attempt #{} to {} (retry_delay={}s)",
+            connect_attempt,
+            config.server_url,
+            retry_delay
+        );
 
         let connect_result = tokio::time::timeout(
             tokio::time::Duration::from_secs(5),
@@ -112,11 +120,18 @@ pub async fn run_client(
 
         let (ws_stream, _response) = match connect_result {
             Ok(Ok(r)) => {
-                log::info!("[WSClient] connected successfully on attempt #{}", connect_attempt);
+                log::info!(
+                    "[WSClient] connected successfully on attempt #{}",
+                    connect_attempt
+                );
                 r
-            },
+            }
             Ok(Err(e)) => {
-                log::info!("[WSClient] connection failed: {} (will retry in {}s)", e, retry_delay);
+                log::info!(
+                    "[WSClient] connection failed: {} (will retry in {}s)",
+                    e,
+                    retry_delay
+                );
                 let _ = event_tx
                     .send(WsEvent::Error(format!("Connection failed: {}", e)))
                     .await;
@@ -125,7 +140,10 @@ pub async fn run_client(
                 continue;
             }
             Err(_) => {
-                log::info!("[WSClient] connection timeout (5s) after attempt #{}", connect_attempt);
+                log::info!(
+                    "[WSClient] connection timeout (5s) after attempt #{}",
+                    connect_attempt
+                );
                 let _ = event_tx
                     .send(WsEvent::Error("连接超时（5 秒），服务器不可达".to_string()))
                     .await;
@@ -136,7 +154,11 @@ pub async fn run_client(
         };
 
         // 连接成功，重置退避
-        log::info!("[WSClient] retry_delay reset from {} to {}", retry_delay, RECONNECT_BASE_DELAY);
+        log::info!(
+            "[WSClient] retry_delay reset from {} to {}",
+            retry_delay,
+            RECONNECT_BASE_DELAY
+        );
         retry_delay = RECONNECT_BASE_DELAY;
         connect_attempt = 0;
 
@@ -166,8 +188,7 @@ pub async fn run_client(
         log::info!("[WSClient] auth sent, waiting for auth_result...");
 
         // 协议层 Ping 保活（保持 TCP 连接不闲置断开；ConnectionManager 不走这一层，需要下面的 heartbeat JSON 同步 last_heartbeat）
-        let mut ping_interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(25));
+        let mut ping_interval = tokio::time::interval(tokio::time::Duration::from_secs(25));
         ping_interval.reset();
 
         let mut file_receive_state: Option<file_handler::FileReceive> = None;
@@ -620,7 +641,11 @@ pub async fn run_client(
         log::info!("[WSClient] inner loop exited, sending Disconnected event");
         let _ = event_tx.send(WsEvent::Disconnected).await;
 
-        log::info!("[WSClient] reconnecting in {}s (max delay {}s)", retry_delay, RECONNECT_MAX_DELAY);
+        log::info!(
+            "[WSClient] reconnecting in {}s (max delay {}s)",
+            retry_delay,
+            RECONNECT_MAX_DELAY
+        );
         tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay)).await;
         retry_delay = (retry_delay * 2).min(RECONNECT_MAX_DELAY);
         log::info!("[WSClient] next retry_delay={}s", retry_delay);

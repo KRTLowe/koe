@@ -1,8 +1,6 @@
 use std::time::Instant;
 
-use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
 use crate::AppState;
 
@@ -122,6 +120,12 @@ pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
         *seq
     };
     let label = format!("bubble-{}", seq);
+    log::info!(
+        "[bubble] create requested: label={} len={} preview={}",
+        label,
+        content.len(),
+        safe_preview(content, 120),
+    );
     state
         .bubble_content
         .lock()
@@ -147,6 +151,9 @@ pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
         .build();
     if let Some(win) = app.get_webview_window(&label) {
         let _ = win.show();
+        log::info!("[bubble] shown: label={}", label);
+    } else {
+        log::info!("[bubble] window not found after build: label={}", label);
     }
 
     reposition_all(app);
@@ -155,6 +162,7 @@ pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
 }
 
 pub(crate) fn close_bubble_by_label(app: &AppHandle, label: &str) {
+    log::info!("[bubble] close requested: label={}", label);
     let state = app.state::<AppState>();
     state.bubble_content.lock().unwrap().remove(label);
     state
@@ -164,7 +172,21 @@ pub(crate) fn close_bubble_by_label(app: &AppHandle, label: &str) {
         .retain(|bubble| bubble.label != label);
     if let Some(win) = app.get_webview_window(label) {
         let _ = win.close();
+        log::info!("[bubble] closed window: label={}", label);
+    } else {
+        log::info!("[bubble] close skipped, window not found: label={}", label);
     }
+}
+
+fn safe_preview(s: &str, max_bytes: usize) -> &str {
+    if max_bytes >= s.len() {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 #[cfg(test)]
@@ -174,10 +196,22 @@ mod tests {
     #[test]
     fn layout_positions_stacks_newest_near_anchor_and_wraps_columns() {
         let bubbles = vec![
-            BubbleInfo { label: "old".to_string(), height: 40.0 },
-            BubbleInfo { label: "older-middle".to_string(), height: 40.0 },
-            BubbleInfo { label: "middle".to_string(), height: 40.0 },
-            BubbleInfo { label: "new".to_string(), height: 40.0 },
+            BubbleInfo {
+                label: "old".to_string(),
+                height: 40.0,
+            },
+            BubbleInfo {
+                label: "older-middle".to_string(),
+                height: 40.0,
+            },
+            BubbleInfo {
+                label: "middle".to_string(),
+                height: 40.0,
+            },
+            BubbleInfo {
+                label: "new".to_string(),
+                height: 40.0,
+            },
         ];
 
         let positions = layout_positions(&bubbles, 100.0, 130.0);

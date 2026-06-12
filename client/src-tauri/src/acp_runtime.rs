@@ -57,6 +57,13 @@ pub(crate) fn start_acp_client(
                     response_text,
                     response_thinking,
                 } => {
+                    log::info!(
+                        "[ACP][runtime] StreamChunk received: text_len={} thinking_len={} text_preview={} thinking_preview={}",
+                        response_text.len(),
+                        response_thinking.len(),
+                        safe_preview(response_text, 80),
+                        safe_preview(response_thinking, 80),
+                    );
                     let _ =
                         handle.emit("acp-message", serde_json::json!({"content": response_text}));
                     let state = handle.state::<AppState>();
@@ -70,15 +77,39 @@ pub(crate) fn start_acp_client(
                         let mut label = state.thinking_bubble_label.lock().unwrap();
                         if label.is_none() {
                             let lbl = create_message_bubble(&handle, "Kaya is thinking…");
+                            log::info!(
+                                "[ACP][runtime] thinking bubble created: label={} content=Kaya is thinking…",
+                                lbl,
+                            );
                             *label = Some(lbl);
+                        } else {
+                            log::info!(
+                                "[ACP][runtime] thinking bubble already visible: label={}",
+                                label.as_deref().unwrap_or("<none>"),
+                            );
                         }
                     } else if !response_text.trim().is_empty() {
                         // text 开始输出 → 关闭 thinking 气泡（如果还开着）
                         let mut label = state.thinking_bubble_label.lock().unwrap();
                         if let Some(lbl) = label.take() {
+                            log::info!(
+                                "[ACP][runtime] thinking bubble closing because text started: label={} text_len={}",
+                                lbl,
+                                response_text.len(),
+                            );
                             drop(label);
                             close_bubble_by_label(&handle, &lbl);
+                        } else {
+                            log::info!(
+                                "[ACP][runtime] no thinking bubble to close; text already present text_len={} thinking_len={}",
+                                response_text.len(),
+                                response_thinking.len(),
+                            );
                         }
+                    } else {
+                        log::info!(
+                            "[ACP][runtime] StreamChunk has neither visible thinking nor text"
+                        );
                     }
                 }
                 AcpEvent::ResponseDone => {
@@ -89,8 +120,14 @@ pub(crate) fn start_acp_client(
                     // 关闭 thinking 气泡（防止只有 thinking 没有 text 的边界情况）
                     let mut label = state.thinking_bubble_label.lock().unwrap();
                     if let Some(lbl) = label.take() {
+                        log::info!(
+                            "[ACP][runtime] thinking bubble closing on ResponseDone: label={}",
+                            lbl,
+                        );
                         drop(label);
                         close_bubble_by_label(&handle, &lbl);
+                    } else {
+                        log::info!("[ACP][runtime] ResponseDone with no thinking bubble visible");
                     }
                 }
                 AcpEvent::SessionReady { session_id } => {
@@ -182,6 +219,17 @@ fn host_from_url(url_without_scheme: &str) -> Option<&str> {
         .split(':')
         .next()
         .filter(|host| !host.is_empty())
+}
+
+fn safe_preview(s: &str, max_bytes: usize) -> &str {
+    if max_bytes >= s.len() {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 #[cfg(test)]
