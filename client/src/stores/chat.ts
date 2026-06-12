@@ -2,6 +2,8 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { KayaSessionRecord } from "../lib/types";
+import { ensureActiveKayaSession, loadKayaSessions, createKayaSession, loadChatMessages, sendChatMessage } from "../lib/tauri";
 
 function chatLog(label: string, ...args: any[]) {
   console.log(`[ChatStore] ${label}`, ...args);
@@ -14,6 +16,17 @@ export interface ChatMessage {
   timestamp: number;
 }
 
+export interface ConcurrencyState {
+  activeReplySessionId: string | null;
+}
+
+export function canStartReplyInSession(
+  sessionId: string,
+  state: ConcurrencyState,
+): boolean {
+  return state.activeReplySessionId === null || state.activeReplySessionId === sessionId;
+}
+
 export const useChatStore = defineStore("chat", () => {
   const messages = ref<ChatMessage[]>([]);
   const connected = ref(false);
@@ -22,6 +35,12 @@ export const useChatStore = defineStore("chat", () => {
   const responding = ref(false);
   const error = ref<string | null>(null);
   const acpReady = computed(() => connected.value && sessionReady.value);
+
+  const kayaSessions = ref<KayaSessionRecord[]>([]);
+  const currentKayaSessionId = ref<string | null>(null);
+  const currentAcpSessionId = ref<string | null>(null);
+  const activeReplySessionId = ref<string | null>(null);
+
   let msgCounter = 0;
   let currentAssistantId: string | null = null;
 
@@ -45,10 +64,11 @@ export const useChatStore = defineStore("chat", () => {
       }
     });
 
-    await listen<{ sessionId: string }>("acp-session", (e) => {
+    await listen<{ sessionId: string }>("acp-session", async (e) => {
       chatLog("acp-session event:", e.payload.sessionId);
       sessionReady.value = true;
       sessionId.value = e.payload.sessionId;
+      currentAcpSessionId.value = e.payload.sessionId;
     });
 
     await listen<{ content: string }>("acp-message", (e) => {
@@ -74,7 +94,24 @@ export const useChatStore = defineStore("chat", () => {
       chatLog("acp-done event");
       responding.value = false;
       currentAssistantId = null;
+      activeReplySessionId.value = null;
     });
+
+    chatLog("init: ensuring active kaya session...");
+    try {
+      const session = await ensureActiveKayaSession();
+      currentKayaSessionId.value = session.id;
+      kayaSessions.value = await loadKayaSessions();
+      const chatMessages = await loadChatMessages(session.id);
+      messages.value = chatMessages.map((m) => ({
+        id: m.id,
+        role: m.role as "user" | "assistant" | "system",
+        content: m.content,
+        timestamp: new Date(m.created_at).getTime(),
+      }));
+    } catch (e) {
+      chatLog("init: sessions load failed:", e);
+    }
 
     chatLog("init: invoking start_acp...");
     try {
@@ -85,8 +122,55 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  async function newSession() {
+    chatLog("newSession: creating new kaya session...");
+    try {
+      const session = await createKayaSession();
+      kayaSessions.value.unshift(session);
+      currentKayaSessionId.value = session.id;
+      messages.value = [];
+      error.value = null;
+    } catch (e) {
+      chatLog("newSession: failed:", e);
+      error.value = String(e);
+    }
+  }
+
+  async function switchSession(id: string) {
+    if (id === currentKayaSessionId.value) return;
+    chatLog("switchSession:", id);
+    currentKayaSessionId.value = id;
+    messages.value = [];
+    error.value = null;
+    try {
+      const chatMessages = await loadChatMessages(id);
+      messages.value = chatMessages.map((m) => ({
+        id: m.id,
+        role: m.role as "user" | "assistant" | "system",
+        content: m.content,
+        timestamp: new Date(m.created_at).getTime(),
+      }));
+    } catch (e) {
+      chatLog("switchSession: load messages failed:", e);
+    }
+  }
+
   async function sendMessage(text: string) {
     if (!text.trim()) return;
+
+    const sessionIdForReply = currentKayaSessionId.value;
+    if (!sessionIdForReply) {
+      error.value = "请先选择或新建一个会话";
+      return;
+    }
+
+    if (!canStartReplyInSession(sessionIdForReply, {
+      activeReplySessionId: activeReplySessionId.value,
+    })) {
+      error.value = "已有会话正在回复，请等待完成后重试";
+      return;
+    }
+
     chatLog("sendMessage: text=", text.substring(0, 80));
     messages.value.push({
       id: `msg_${++msgCounter}`,
@@ -95,21 +179,27 @@ export const useChatStore = defineStore("chat", () => {
       timestamp: Date.now(),
     });
     responding.value = true;
+    activeReplySessionId.value = sessionIdForReply;
     error.value = null;
     setTimeout(() => {
       if (responding.value) {
         chatLog("sendMessage: 120s timeout, forcing responding=false");
         responding.value = false;
+        activeReplySessionId.value = null;
       }
     }, 120000);
 
     try {
-      await invoke("send_acp_message", { text });
-      chatLog("sendMessage: IPC call succeeded");
+      const updatedSession = await sendChatMessage(text, sessionIdForReply);
+      kayaSessions.value = kayaSessions.value.map((session) => (
+        session.id === updatedSession.id ? updatedSession : session
+      ));
+      chatLog("sendMessage: unified IPC call succeeded");
     } catch (e: any) {
       chatLog("sendMessage: IPC failed:", String(e));
       error.value = String(e);
       responding.value = false;
+      activeReplySessionId.value = null;
     }
   }
 
@@ -119,6 +209,7 @@ export const useChatStore = defineStore("chat", () => {
 
   return {
     messages, connected, sessionReady, sessionId, acpReady, responding, error,
-    init, sendMessage, clearConversation,
+    kayaSessions, currentKayaSessionId, currentAcpSessionId, activeReplySessionId,
+    init, newSession, switchSession, sendMessage, clearConversation,
   };
 });
