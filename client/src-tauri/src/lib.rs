@@ -1,7 +1,9 @@
 mod acp_client;
 mod acp_runtime;
 mod bubble;
+mod chat_history;
 mod config;
+mod file_history;
 mod copilot;
 mod file_handler;
 mod notify;
@@ -70,6 +72,7 @@ pub(crate) struct AppState {
     pub(crate) acp_tx: Mutex<Option<tokio::sync::mpsc::Sender<String>>>,
     pub(crate) acp_connected: Mutex<bool>,
     pub(crate) session_id: Mutex<Option<String>>,
+    pub(crate) current_kaya_session_id: Mutex<Option<String>>,
     pub(crate) upload_tx: Mutex<Option<tokio::sync::mpsc::Sender<ws_client::UploadRequest>>>,
     pub(crate) signal_tx: Mutex<Option<tokio::sync::mpsc::Sender<ws_client::SignalRequest>>>,
     pub(crate) tool_manager: Mutex<Option<ToolManager>>,
@@ -178,6 +181,85 @@ fn send_acp_message(text: String, state: tauri::State<AppState>) -> Result<(), S
     }
 }
 
+fn send_acp_payload(text: String, state: &tauri::State<AppState>) -> Result<(), String> {
+    let cmd = text.trim();
+    let msg = match cmd {
+        "/session new" => "__new_session__".to_string(),
+        "/cancel" | "/session cancel" => "__cancel__".to_string(),
+        _ => {
+            let config = state.config.lock().map_err(|e| e.to_string())?;
+            let config = config.as_ref().ok_or("配置未加载")?;
+            format!(
+                "[kaya-transfer-hub | client: {}]\n{}",
+                config.client_id, text
+            )
+        }
+    };
+    let tx = state.acp_tx.lock().map_err(|e| e.to_string())?;
+    if let Some(tx) = tx.as_ref() {
+        tx.try_send(msg).map_err(|e| format!("发送失败: {}", e))
+    } else {
+        Err("ACP 客户端未启动".to_string())
+    }
+}
+
+#[tauri::command]
+fn send_chat_message(
+    text: String,
+    kaya_session_id: Option<String>,
+    state: tauri::State<AppState>,
+    app: tauri::AppHandle,
+) -> Result<chat_history::KayaSessionRecord, String> {
+    let path = history_db_path(&app)?;
+    let db = chat_history::open_history_db(&path)?;
+
+    let session = match kaya_session_id {
+        Some(session_id) => {
+            let sessions = chat_history::load_kaya_sessions(&db)?;
+            sessions
+                .into_iter()
+                .find(|session| session.id == session_id)
+                .ok_or("当前会话不存在".to_string())?
+        }
+        None => chat_history::ensure_active_kaya_session(&db)?,
+    };
+
+    let is_first_user_message = !chat_history::load_chat_messages(&db, &session.id)?
+        .iter()
+        .any(|message| message.role == "user");
+
+    let local_acp_session_id = state
+        .session_id
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .map(|remote_session_id| {
+            chat_history::create_or_switch_acp_session(&db, &session.id, &remote_session_id)
+                .map(|record| record.id)
+        })
+        .transpose()?;
+
+    chat_history::append_chat_message(
+        &db,
+        &session.id,
+        local_acp_session_id.as_deref(),
+        "user",
+        &text,
+    )?;
+
+    let final_session = if is_first_user_message {
+        chat_history::update_kaya_session_title_from_first_user_message(&db, &session.id, &text)?
+    } else {
+        session
+    };
+
+    *state.current_kaya_session_id.lock().map_err(|e| e.to_string())? = Some(final_session.id.clone());
+
+    send_acp_payload(text, &state)?;
+
+    Ok(final_session)
+}
+
 #[tauri::command]
 fn set_tool_enabled(
     name: String,
@@ -259,6 +341,126 @@ fn send_signal(
     } else {
         Err("WebSocket 客户端未启动".to_string())
     }
+}
+
+pub(crate) fn history_db_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("history.db"))
+}
+
+#[tauri::command]
+fn load_kaya_sessions(app: tauri::AppHandle) -> Result<Vec<chat_history::KayaSessionRecord>, String> {
+    let path = history_db_path(&app)?;
+    let db = chat_history::open_history_db(&path)?;
+    chat_history::load_kaya_sessions(&db)
+}
+
+#[tauri::command]
+fn load_latest_kaya_session(app: tauri::AppHandle) -> Result<Option<chat_history::KayaSessionRecord>, String> {
+    let path = history_db_path(&app)?;
+    let db = chat_history::open_history_db(&path)?;
+    chat_history::load_latest_kaya_session(&db)
+}
+
+#[tauri::command]
+fn create_kaya_session(app: tauri::AppHandle) -> Result<chat_history::KayaSessionRecord, String> {
+    let path = history_db_path(&app)?;
+    let db = chat_history::open_history_db(&path)?;
+    chat_history::create_kaya_session(&db, &chat_history::default_kaya_session_title(chrono::Local::now()))
+}
+
+#[tauri::command]
+fn load_chat_messages(app: tauri::AppHandle, kaya_session_id: String) -> Result<Vec<chat_history::ChatMessageRecord>, String> {
+    let path = history_db_path(&app)?;
+    let db = chat_history::open_history_db(&path)?;
+    chat_history::load_chat_messages(&db, &kaya_session_id)
+}
+
+#[tauri::command]
+fn append_chat_message(
+    app: tauri::AppHandle,
+    kaya_session_id: String,
+    acp_session_id: Option<String>,
+    role: String,
+    content: String,
+) -> Result<chat_history::ChatMessageRecord, String> {
+    let path = history_db_path(&app)?;
+    let db = chat_history::open_history_db(&path)?;
+    chat_history::append_chat_message(
+        &db,
+        &kaya_session_id,
+        acp_session_id.as_deref(),
+        &role,
+        &content,
+    )
+}
+
+#[tauri::command]
+fn update_kaya_session_title_from_first_user_message(
+    app: tauri::AppHandle,
+    kaya_session_id: String,
+    first_user_message: String,
+) -> Result<chat_history::KayaSessionRecord, String> {
+    let path = history_db_path(&app)?;
+    let db = chat_history::open_history_db(&path)?;
+    chat_history::update_kaya_session_title_from_first_user_message(
+        &db,
+        &kaya_session_id,
+        &first_user_message,
+    )
+}
+
+#[tauri::command]
+fn create_or_switch_acp_session(app: tauri::AppHandle, kaya_session_id: String, remote_session_id: String) -> Result<chat_history::AcpSessionRecord, String> {
+    let path = history_db_path(&app)?;
+    let db = chat_history::open_history_db(&path)?;
+    chat_history::create_or_switch_acp_session(&db, &kaya_session_id, &remote_session_id)
+}
+
+#[tauri::command]
+fn ensure_active_kaya_session(app: tauri::AppHandle) -> Result<chat_history::KayaSessionRecord, String> {
+    let path = history_db_path(&app)?;
+    let db = chat_history::open_history_db(&path)?;
+    chat_history::ensure_active_kaya_session(&db)
+}
+
+#[tauri::command]
+fn load_file_transfer_history(app: tauri::AppHandle) -> Result<Vec<file_history::FileTransferRecord>, String> {
+    let path = history_db_path(&app)?;
+    let db = file_history::open_file_history_db(&path)?;
+    file_history::load_file_transfer_history(&db)
+}
+
+#[tauri::command]
+fn append_file_transfer_record(
+    app: tauri::AppHandle,
+    file_name: String,
+    file_size: i64,
+    direction: String,
+    status: String,
+    file_path: Option<String>,
+) -> Result<(), String> {
+    let record = file_history::NewFileTransferRecord {
+        file_name,
+        file_size,
+        direction,
+        status,
+        file_path,
+        kaya_session_id: None,
+        acp_session_id: None,
+    };
+    persist_file_transfer_record_helper(&app, record)?;
+    Ok(())
+}
+
+pub(crate) fn persist_file_transfer_record_helper(
+    app: &tauri::AppHandle,
+    record: file_history::NewFileTransferRecord,
+) -> Result<file_history::FileTransferRecord, String> {
+    let path = history_db_path(app)?;
+    let db = file_history::open_file_history_db(&path)?;
+    file_history::append_file_transfer_record(&db, record)
 }
 
 #[tauri::command]
@@ -443,6 +645,7 @@ pub fn run() {
             acp_tx: Mutex::new(None),
             acp_connected: Mutex::new(false),
             session_id: Mutex::new(None),
+            current_kaya_session_id: Mutex::new(None),
             upload_tx: Mutex::new(None),
             signal_tx: Mutex::new(None),
             tool_manager: Mutex::new(None),
@@ -459,12 +662,17 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             load_config, save_config, get_connection_status,
-            open_file, send_acp_message, start_acp, get_session_id,
+            open_file, send_acp_message, send_chat_message, start_acp, get_session_id,
             upload_file, upload_file_data, send_signal,
             execute_copilot, cancel_copilot,
             copilot_enter_monitor, copilot_close,
             resize_float_window, resize_bubble, take_bubble_content, quick_chat_close,
             set_tool_enabled, close_tool_call_overlay,
+            load_kaya_sessions, load_latest_kaya_session, create_kaya_session,
+            ensure_active_kaya_session,
+            load_chat_messages, append_chat_message, update_kaya_session_title_from_first_user_message,
+            create_or_switch_acp_session,
+            load_file_transfer_history, append_file_transfer_record,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

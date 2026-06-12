@@ -52,7 +52,9 @@ pub enum AcpEvent {
         response_text: String,
         response_thinking: String,
     },
-    ResponseDone,
+    ResponseDone {
+        response_text: String,
+    },
     SessionReady {
         session_id: String,
     },
@@ -533,7 +535,9 @@ pub async fn run_acp_client(
                                 let is_prompt_done = last_prompt_id.map_or(false, |pid| id == pid);
                                 if is_prompt_done {
                                     response_in_flight = false;
-                                    let _ = event_tx.try_send(AcpEvent::ResponseDone);
+                                    let _ = event_tx.try_send(AcpEvent::ResponseDone {
+                                        response_text: response_text.clone(),
+                                    });
                                 }
 
                                 if let Some(result) = val.get("result") {
@@ -574,7 +578,9 @@ pub async fn run_acp_client(
                                     if !is_prompt_done && result.get("stopReason").is_some() {
                                         response_in_flight = false;
                                         log::info!("ACP prompt done (stopReason, id={}, last_id={:?})", id, last_prompt_id);
-                                        let _ = event_tx.try_send(AcpEvent::ResponseDone);
+                                        let _ = event_tx.try_send(AcpEvent::ResponseDone {
+                                            response_text: response_text.clone(),
+                                        });
                                     }
                                 }
                             }

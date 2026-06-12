@@ -112,10 +112,47 @@ pub(crate) fn start_acp_client(
                         );
                     }
                 }
-                AcpEvent::ResponseDone => {
+                AcpEvent::ResponseDone { response_text } => {
+                    let state = handle.state::<AppState>();
+                    let current_kaya_session_id = state.current_kaya_session_id.lock().unwrap().clone();
+                    let remote_session_id = state.session_id.lock().unwrap().clone();
+
+                    if let Some(kaya_session_id) = current_kaya_session_id {
+                        match crate::history_db_path(&handle)
+                            .and_then(|path| crate::chat_history::open_history_db(&path))
+                            .and_then(|db| {
+                                let local_acp_session_id = remote_session_id
+                                    .as_deref()
+                                    .map(|remote| {
+                                        crate::chat_history::create_or_switch_acp_session(
+                                            &db,
+                                            &kaya_session_id,
+                                            remote,
+                                        )
+                                        .map(|record| record.id)
+                                    })
+                                    .transpose()?;
+
+                                if response_text.trim().is_empty() {
+                                    return Ok(());
+                                }
+
+                                crate::chat_history::append_chat_message(
+                                    &db,
+                                    &kaya_session_id,
+                                    local_acp_session_id.as_deref(),
+                                    "assistant",
+                                    &response_text,
+                                )
+                                .map(|_| ())
+                            }) {
+                            Ok(()) => log::info!("[ACP][runtime] persisted assistant reply for kaya_session={} len={}", kaya_session_id, response_text.len()),
+                            Err(e) => log::error!("[ACP][runtime] failed to persist assistant reply: {}", e),
+                        }
+                    }
+
                     let _ = handle.emit("acp-done", serde_json::json!({"done": true}));
                     // 回复完成，立即冲刷去抖缓冲（把 last 设到过去让下一个 tick 直接触发）
-                    let state = handle.state::<AppState>();
                     *state.debounce_last.lock().unwrap() = Instant::now() - Duration::from_secs(10);
                     // 关闭 thinking 气泡（防止只有 thinking 没有 text 的边界情况）
                     let mut label = state.thinking_bubble_label.lock().unwrap();

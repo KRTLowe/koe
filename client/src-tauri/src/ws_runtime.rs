@@ -86,6 +86,20 @@ pub(crate) fn start_ws_client(
                 WsEvent::FileReceived { name, size, path } => {
                     log::info!("[lib] WS event: FileReceived: name={} size={}", name, size);
                     notify::on_file_saved(&handle, name, *size, path);
+                    if let Err(e) = crate::persist_file_transfer_record_helper(
+                        &handle,
+                        crate::file_history::NewFileTransferRecord {
+                            file_name: name.clone(),
+                            file_size: *size as i64,
+                            direction: "received".into(),
+                            status: "ok".into(),
+                            file_path: Some(path.to_string_lossy().to_string()),
+                            kaya_session_id: None,
+                            acp_session_id: None,
+                        },
+                    ) {
+                        log::error!("[lib] Failed to persist file transfer record: {}", e);
+                    }
                 }
                 WsEvent::AcpInject { text } => {
                     log::info!("[lib] WS event: AcpInject rcvd, len={}", text.len());
