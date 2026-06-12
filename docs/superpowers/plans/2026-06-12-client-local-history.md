@@ -16,10 +16,12 @@
   - 增加 SQLite 依赖（`rusqlite`），保持现有依赖风格。
 - 创建：`client/src-tauri/src/chat_history.rs`
   - 负责 `kaya_sessions`、`acp_sessions`、`chat_messages` 的建表、查询、写入、恢复逻辑。
+  - 负责会话默认标题和首条用户消息自动改名逻辑。
 - 创建：`client/src-tauri/src/file_history.rs`
   - 负责 `file_transfer_history` 的建表、查询、写入逻辑。
 - 修改：`client/src-tauri/src/lib.rs`
   - 注册历史相关 command，初始化数据库访问入口，把现有聊天/文件事件接入持久层。
+  - 暴露会话标题更新 command。
 - 修改：`client/src-tauri/src/acp_runtime.rs`
   - 如果当前有 `session_id` 更新入口，补与卡雅会话/ACP 会话绑定的调用；若逻辑集中在 `lib.rs`/事件侧，则只在对应文件修改。
 - 修改：`client/src/lib/types.ts`
@@ -676,6 +678,104 @@ cargo test chat_history::tests::creates_new_acp_session_without_creating_new_kay
 ```bash
 cargo test chat_history::tests -- --test-threads=1
 cargo check
+```
+
+预期：PASS。
+
+---
+
+### 任务 8.5：实现基础版会话命名规则
+
+**文件：**
+- 修改：`client/src-tauri/src/chat_history.rs`
+- 修改：`client/src-tauri/src/lib.rs`
+- 修改：`client/src/lib/tauri.ts`
+- 修改：`client/src/stores/chat.ts`
+
+- [ ] **步骤 1：编写失败测试，验证首条用户消息会把默认标题更新为消息摘要**
+
+在 `chat_history.rs` tests 模块追加：
+
+```rust
+#[test]
+fn updates_default_title_from_first_user_message() {
+    let db = open_history_db_in_memory().unwrap();
+    let session = create_kaya_session(&db, "新会话 2026-06-12 18:30").unwrap();
+
+    let updated = update_kaya_session_title_from_first_user_message(
+        &db,
+        &session.id,
+        "  帮我查一下 10.0.0.11 的客户端日志  ",
+    )
+    .unwrap();
+
+    assert_eq!(updated.title, "帮我查一下 10.0.0.11 的客户端日志");
+}
+```
+
+- [ ] **步骤 2：运行测试验证失败**
+
+运行：
+
+```bash
+cd /kaya/tmp_workplace/kaya-beam/client/src-tauri
+cargo test chat_history::tests::updates_default_title_from_first_user_message
+```
+
+预期：FAIL，`update_kaya_session_title_from_first_user_message` 未定义。
+
+- [ ] **步骤 3：实现默认标题与自动改名逻辑**
+
+在 `chat_history.rs` 增加：
+
+```rust
+pub fn default_kaya_session_title(now: chrono::DateTime<chrono::Local>) -> String;
+pub fn summarize_first_user_message_for_title(text: &str) -> String;
+pub fn update_kaya_session_title_from_first_user_message(
+    db: &rusqlite::Connection,
+    kaya_session_id: &str,
+    first_user_message: &str,
+) -> Result<KayaSessionRecord, String>;
+```
+
+要求：
+
+- 默认标题格式：`新会话 YYYY-MM-DD HH:mm`
+- 自动改名时：
+  - trim 首尾空白
+  - 把换行折叠为空格
+  - 保留完整数据库标题文本，不在数据库层做过短截断
+- 只在当前标题仍是默认标题时才更新
+
+在 `lib.rs` 增加 Tauri command：
+
+```rust
+#[tauri::command]
+fn update_kaya_session_title_from_first_user_message(
+    app: tauri::AppHandle,
+    kaya_session_id: String,
+    first_user_message: String,
+) -> Result<chat_history::KayaSessionRecord, String>;
+```
+
+在 `tauri.ts` 增加对应 wrapper，在 `chat.ts` 的 `sendMessage()` 中：
+
+- 用户消息仍先落库
+- 如果这是当前卡雅会话的第一条用户消息，且当前标题仍是默认标题，则调用标题更新 IPC
+- 更新成功后同步刷新 `kayaSessions` 中对应会话标题
+
+- [ ] **步骤 4：运行标题相关测试与构建检查**
+
+运行：
+
+```bash
+cd /kaya/tmp_workplace/kaya-beam/client/src-tauri
+cargo test chat_history::tests::updates_default_title_from_first_user_message
+cargo check
+
+cd /kaya/tmp_workplace/kaya-beam/client
+npx vue-tsc --noEmit
+npm run build
 ```
 
 预期：PASS。
