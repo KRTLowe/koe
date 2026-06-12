@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from "vue";
+import { computed, ref, nextTick, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { renderMarkdown } from "../lib/markdown";
 
 const text = ref("");
 const bubbleRef = ref<HTMLDivElement | null>(null);
+const renderedHtml = computed(() => renderMarkdown(text.value));
 
 function remeasure() {
   nextTick(() => {
@@ -34,7 +36,7 @@ onMounted(async () => {
 <template>
   <div class="bubble-root">
     <div class="bubble-body">
-      <div ref="bubbleRef" class="bubble-text">{{ text }}</div>
+      <div ref="bubbleRef" class="bubble-text markdown-body" v-html="renderedHtml"></div>
       <div class="bubble-tail"></div>
     </div>
   </div>
@@ -72,6 +74,117 @@ onMounted(async () => {
   word-break: break-word;
   white-space: pre-wrap;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.markdown-body :deep(*) {
+  box-sizing: border-box;
+}
+
+.markdown-body {
+  white-space: normal;
+}
+
+.markdown-body :deep(p),
+.markdown-body :deep(ul),
+.markdown-body :deep(ol),
+.markdown-body :deep(blockquote),
+.markdown-body :deep(pre),
+.markdown-body :deep(table) {
+  margin: 0 0 8px;
+}
+
+.markdown-body :deep(p:last-child),
+.markdown-body :deep(ul:last-child),
+.markdown-body :deep(ol:last-child),
+.markdown-body :deep(blockquote:last-child),
+.markdown-body :deep(pre:last-child),
+.markdown-body :deep(table:last-child) {
+  margin-bottom: 0;
+}
+
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3) {
+  margin: 0 0 8px;
+  line-height: 1.25;
+  color: #fff;
+}
+
+.markdown-body :deep(h1) {
+  font-size: 17px;
+}
+
+.markdown-body :deep(h2) {
+  font-size: 16px;
+}
+
+.markdown-body :deep(h3) {
+  font-size: 15px;
+}
+
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  padding-left: 18px;
+}
+
+.markdown-body :deep(blockquote) {
+  padding-left: 10px;
+  border-left: 3px solid rgba(147, 197, 253, 0.85);
+  color: #cbd5e1;
+}
+
+.markdown-body :deep(code) {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #dbeafe;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.markdown-body :deep(pre) {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.markdown-body :deep(pre code) {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  white-space: pre;
+}
+
+.markdown-body :deep(table) {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
+  padding: 4px 6px;
+  border: 1px solid rgba(148, 163, 184, 0.7);
+}
+
+.markdown-body :deep(th) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.markdown-body :deep(img) {
+  max-width: 100%;
+  max-height: 220px;
+  border-radius: 8px;
+}
+
+.markdown-body :deep(a) {
+  color: #93c5fd;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .bubble-tail {
