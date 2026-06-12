@@ -85,11 +85,17 @@ impl ToolManager {
 
     /// 返回所有已启用工具的 ToolDef（用于注册到服务端）
     pub fn enabled_defs(&self) -> Vec<ToolDef> {
-        let names: Vec<&str> = self.tools.iter()
+        let names: Vec<&str> = self
+            .tools
+            .iter()
             .filter(|t| t.is_enabled())
             .map(|t| t.name())
             .collect();
-        log::info!("[ToolManager] enabled_defs: {} tools enabled: {:?}", names.len(), names);
+        log::info!(
+            "[ToolManager] enabled_defs: {} tools enabled: {:?}",
+            names.len(),
+            names
+        );
         self.tools
             .iter()
             .filter(|t| t.is_enabled())
@@ -103,15 +109,26 @@ impl ToolManager {
 
     /// 按名称执行工具
     pub fn execute(&self, name: &str, args: &Value) -> Option<ToolResult> {
-        log::info!("[ToolManager] execute: name={}, args={}, total_tools={}",
-            name, args, self.tools.len());
+        log::info!(
+            "[ToolManager] execute: name={}, args={}, total_tools={}",
+            name,
+            args,
+            self.tools.len()
+        );
         for tool in &self.tools {
-            log::info!("[ToolManager]   check tool={}, enabled={}",
-                tool.name(), tool.is_enabled());
+            log::info!(
+                "[ToolManager]   check tool={}, enabled={}",
+                tool.name(),
+                tool.is_enabled()
+            );
             if tool.name() == name && tool.is_enabled() {
                 let result = tool.execute(args);
-                log::info!("[ToolManager]   -> executed {}, is_error={}, has_upload={}",
-                    name, result.is_error, result.upload_path.is_some());
+                log::info!(
+                    "[ToolManager]   -> executed {}, is_error={}, has_upload={}",
+                    name,
+                    result.is_error,
+                    result.upload_path.is_some()
+                );
                 return Some(result);
             }
         }
@@ -121,7 +138,11 @@ impl ToolManager {
 
     /// 更新工具的启用状态
     pub fn set_enabled(&mut self, name: &str, enabled: bool) {
-        log::info!("[ToolManager] set_enabled: name={}, enabled={}", name, enabled);
+        log::info!(
+            "[ToolManager] set_enabled: name={}, enabled={}",
+            name,
+            enabled
+        );
         for tool in &mut self.tools {
             if tool.name() == name {
                 let old = tool.is_enabled();
@@ -136,23 +157,23 @@ impl ToolManager {
 
 // ── 子模块 ────────────────────────────────────────
 
-mod screenshot;
 mod clipboard;
-mod file_search;
-mod read_file;
-mod write_file;
-mod list_dir;
-mod uia_tree;
-mod path_guard;
 mod file_info;
+mod file_search;
 mod grep_file;
-mod pull_file;
-mod run_command;
-mod write_clipboard;
-mod open_path;
-mod system_info;
-mod list_windows;
-mod start_process;
-mod kill_process;
 mod input;
+mod kill_process;
+mod list_dir;
+mod list_windows;
 mod ocr;
+mod open_path;
+mod path_guard;
+mod pull_file;
+mod read_file;
+mod run_command;
+mod screenshot;
+mod start_process;
+mod system_info;
+mod uia_tree;
+mod write_clipboard;
+mod write_file;

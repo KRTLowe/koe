@@ -1,9 +1,9 @@
 use serde_json::Value;
 use walkdir::WalkDir;
 
+use super::path_guard::PathGuard;
 use super::{Tool, ToolResult};
 use crate::config::AppConfig;
-use super::path_guard::PathGuard;
 
 pub struct FileSearchTool {
     enabled: bool,
@@ -17,7 +17,10 @@ impl FileSearchTool {
             .get("file_search")
             .copied()
             .unwrap_or(true);
-        Self { enabled, guard: PathGuard::new(config) }
+        Self {
+            enabled,
+            guard: PathGuard::new(config),
+        }
     }
 }
 
@@ -67,14 +70,8 @@ impl Tool for FileSearchTool {
         let start = std::time::Instant::now();
         log::info!("[FileSearchTool] execute begin: enabled={}", self.enabled);
 
-        let root = args
-            .get("root")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
-        let pattern = args
-            .get("pattern")
-            .and_then(|v| v.as_str())
-            .unwrap_or("*");
+        let root = args.get("root").and_then(|v| v.as_str()).unwrap_or(".");
+        let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
         let recursive = args
             .get("recursive")
             .and_then(|v| v.as_bool())
@@ -83,8 +80,13 @@ impl Tool for FileSearchTool {
             .get("max_results")
             .and_then(|v| v.as_u64())
             .unwrap_or(50) as usize;
-        log::info!("[FileSearchTool] args: root={}, pattern={}, recursive={}, max_results={}",
-            root, pattern, recursive, max_results);
+        log::info!(
+            "[FileSearchTool] args: root={}, pattern={}, recursive={}, max_results={}",
+            root,
+            pattern,
+            recursive,
+            max_results
+        );
 
         // 安全守卫：禁止搜索根目录
         let root_trimmed = root.trim();
@@ -120,14 +122,20 @@ impl Tool for FileSearchTool {
         {
             dirs_visited += 1;
             if dirs_visited as usize > max_entries {
-                log::info!("[FileSearchTool] exceeded max_entries={}, aborting", max_entries);
+                log::info!(
+                    "[FileSearchTool] exceeded max_entries={}, aborting",
+                    max_entries
+                );
                 return ToolResult::err(format!(
                     "搜索被中断：已扫描 {} 个条目（上限 {}）。请缩小搜索范围或关闭递归搜索。",
                     dirs_visited, max_entries,
                 ));
             }
             if results.len() >= max_results {
-                log::info!("[FileSearchTool] hit max_results={}, stopping early", max_results);
+                log::info!(
+                    "[FileSearchTool] hit max_results={}, stopping early",
+                    max_results
+                );
                 break;
             }
             let name = entry.file_name().to_string_lossy().to_lowercase();
@@ -136,13 +144,14 @@ impl Tool for FileSearchTool {
             }
         }
 
-        log::info!("[FileSearchTool] execute end: elapsed={:?}, dirs_visited={}, results={}",
-            start.elapsed(), dirs_visited, results.len());
+        log::info!(
+            "[FileSearchTool] execute end: elapsed={:?}, dirs_visited={}, results={}",
+            start.elapsed(),
+            dirs_visited,
+            results.len()
+        );
         if results.is_empty() {
-            ToolResult::ok(format!(
-                "No files matching '{}' found in {}",
-                pattern, root
-            ))
+            ToolResult::ok(format!("No files matching '{}' found in {}", pattern, root))
         } else {
             ToolResult::ok(format!(
                 "Found {} files matching '{}':\n{}",

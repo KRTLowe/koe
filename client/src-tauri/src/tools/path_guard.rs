@@ -48,8 +48,16 @@ fn strip_verbatim_prefix(p: &Path) -> PathBuf {
 impl PathGuard {
     pub fn new(config: &crate::config::AppConfig) -> Self {
         Self {
-            allowed_reads: config.allowed_read_paths.iter().map(|s| expand_tilde(s)).collect(),
-            allowed_writes: config.allowed_write_paths.iter().map(|s| expand_tilde(s)).collect(),
+            allowed_reads: config
+                .allowed_read_paths
+                .iter()
+                .map(|s| expand_tilde(s))
+                .collect(),
+            allowed_writes: config
+                .allowed_write_paths
+                .iter()
+                .map(|s| expand_tilde(s))
+                .collect(),
             denied_exts: config.denied_extensions.clone(),
         }
     }
@@ -58,7 +66,10 @@ impl PathGuard {
     pub fn check_read(&self, path: &str) -> Result<PathBuf, String> {
         let p = Path::new(path);
         log::info!("[PathGuard::check_read] input path='{}'", path);
-        log::info!("[PathGuard::check_read] allowed_reads={:?}", self.allowed_reads);
+        log::info!(
+            "[PathGuard::check_read] allowed_reads={:?}",
+            self.allowed_reads
+        );
 
         if !p.is_absolute() {
             log::warn!("[PathGuard::check_read] NOT_ABSOLUTE: path='{}'", path);
@@ -71,7 +82,11 @@ impl PathGuard {
                 c
             }
             Err(e) => {
-                log::warn!("[PathGuard::check_read] CANONICALIZE_FAILED: path='{}' err={}", path, e);
+                log::warn!(
+                    "[PathGuard::check_read] CANONICALIZE_FAILED: path='{}' err={}",
+                    path,
+                    e
+                );
                 return Err(format!("路径不存在或无权限访问: {}", e));
             }
         };
@@ -80,7 +95,9 @@ impl PathGuard {
         #[cfg(target_os = "windows")]
         let canonical = strip_verbatim_prefix(&canonical);
 
-        let ext = canonical.extension().map(|e| e.to_string_lossy().to_lowercase());
+        let ext = canonical
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase());
         if let Some(ref e) = ext {
             if self.denied_exts.contains(e) {
                 log::warn!("[PathGuard::check_read] BLOCKED_EXT: .{}", e);
@@ -88,13 +105,24 @@ impl PathGuard {
             }
         }
 
-        let allowed_display: Vec<String> = self.allowed_reads.iter()
-            .map(|d| d.display().to_string()).collect();
+        let allowed_display: Vec<String> = self
+            .allowed_reads
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect();
         let in_whitelist = self.allowed_reads.iter().any(|d| canonical.starts_with(d));
-        log::info!("[PathGuard::check_read] whitelist_check: canonical='{}' in_whitelist={}", canonical.display(), in_whitelist);
+        log::info!(
+            "[PathGuard::check_read] whitelist_check: canonical='{}' in_whitelist={}",
+            canonical.display(),
+            in_whitelist
+        );
         if !in_whitelist {
             for d in &self.allowed_reads {
-                log::info!("[PathGuard::check_read]   compare: starts_with('{}') = {}", d.display(), canonical.starts_with(d));
+                log::info!(
+                    "[PathGuard::check_read]   compare: starts_with('{}') = {}",
+                    d.display(),
+                    canonical.starts_with(d)
+                );
             }
             return Err(format!(
                 "路径不在允许的读取范围内。允许的目录: {}",
@@ -109,7 +137,10 @@ impl PathGuard {
     pub fn check_write(&self, path: &str) -> Result<PathBuf, String> {
         let p = Path::new(path);
         log::info!("[PathGuard::check_write] input path='{}'", path);
-        log::info!("[PathGuard::check_write] allowed_writes={:?}", self.allowed_writes);
+        log::info!(
+            "[PathGuard::check_write] allowed_writes={:?}",
+            self.allowed_writes
+        );
 
         if !p.is_absolute() {
             log::warn!("[PathGuard::check_write] NOT_ABSOLUTE: path='{}'", path);
@@ -134,17 +165,27 @@ impl PathGuard {
             let canonical = match p.canonicalize() {
                 Ok(c) => c,
                 Err(e) => {
-                    log::warn!("[PathGuard::check_write] CANONICALIZE_FAILED on existing file: err={}", e);
+                    log::warn!(
+                        "[PathGuard::check_write] CANONICALIZE_FAILED on existing file: err={}",
+                        e
+                    );
                     return Err(format!("无法解析路径: {}", e));
                 }
             };
             #[cfg(target_os = "windows")]
             let canonical = strip_verbatim_prefix(&canonical);
             let in_whitelist = self.allowed_writes.iter().any(|d| canonical.starts_with(d));
-            log::info!("[PathGuard::check_write] canonical='{}' in_whitelist={}", canonical.display(), in_whitelist);
+            log::info!(
+                "[PathGuard::check_write] canonical='{}' in_whitelist={}",
+                canonical.display(),
+                in_whitelist
+            );
             if !in_whitelist {
-                let allowed_display: Vec<String> = self.allowed_writes.iter()
-                    .map(|d| d.display().to_string()).collect();
+                let allowed_display: Vec<String> = self
+                    .allowed_writes
+                    .iter()
+                    .map(|d| d.display().to_string())
+                    .collect();
                 return Err(format!(
                     "路径不在允许的写入范围内。允许的目录: {}",
                     allowed_display.join(", "),
@@ -161,17 +202,31 @@ impl PathGuard {
         let canonical_parent = match parent.canonicalize() {
             Ok(c) => c,
             Err(e) => {
-                log::warn!("[PathGuard::check_write] PARENT_CANONICALIZE_FAILED: parent='{}' err={}", parent.display(), e);
+                log::warn!(
+                    "[PathGuard::check_write] PARENT_CANONICALIZE_FAILED: parent='{}' err={}",
+                    parent.display(),
+                    e
+                );
                 return Err(format!("父目录不存在: {}", e));
             }
         };
         #[cfg(target_os = "windows")]
         let canonical_parent = strip_verbatim_prefix(&canonical_parent);
-        let in_whitelist = self.allowed_writes.iter().any(|d| canonical_parent.starts_with(d));
-        log::info!("[PathGuard::check_write] parent_canonical='{}' in_whitelist={}", canonical_parent.display(), in_whitelist);
+        let in_whitelist = self
+            .allowed_writes
+            .iter()
+            .any(|d| canonical_parent.starts_with(d));
+        log::info!(
+            "[PathGuard::check_write] parent_canonical='{}' in_whitelist={}",
+            canonical_parent.display(),
+            in_whitelist
+        );
         if !in_whitelist {
-            let allowed_display: Vec<String> = self.allowed_writes.iter()
-                .map(|d| d.display().to_string()).collect();
+            let allowed_display: Vec<String> = self
+                .allowed_writes
+                .iter()
+                .map(|d| d.display().to_string())
+                .collect();
             return Err(format!(
                 "路径不在允许的写入范围内。允许的目录: {}",
                 allowed_display.join(", "),

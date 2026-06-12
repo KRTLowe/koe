@@ -1,9 +1,9 @@
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 
+use super::path_guard::PathGuard;
 use super::{Tool, ToolResult};
 use crate::config::AppConfig;
-use super::path_guard::PathGuard;
 
 pub struct ReadFileTool {
     enabled: bool,
@@ -13,14 +13,20 @@ pub struct ReadFileTool {
 impl ReadFileTool {
     pub fn new(config: &AppConfig) -> Self {
         Self {
-            enabled: config.tool_permissions.get("read_text_file").copied().unwrap_or(true),
+            enabled: config
+                .tool_permissions
+                .get("read_text_file")
+                .copied()
+                .unwrap_or(true),
             guard: PathGuard::new(config),
         }
     }
 }
 
 impl Tool for ReadFileTool {
-    fn name(&self) -> &'static str { "read_text_file" }
+    fn name(&self) -> &'static str {
+        "read_text_file"
+    }
     fn description(&self) -> &'static str {
         "Read a text file. Byte mode (default) or line mode (with start_line)"
     }
@@ -37,8 +43,12 @@ impl Tool for ReadFileTool {
             "required": ["path"]
         })
     }
-    fn is_enabled(&self) -> bool { self.enabled }
-    fn set_enabled(&mut self, e: bool) { self.enabled = e; }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    fn set_enabled(&mut self, e: bool) {
+        self.enabled = e;
+    }
 
     fn execute(&self, args: &Value) -> ToolResult {
         let start = std::time::Instant::now();
@@ -46,7 +56,10 @@ impl Tool for ReadFileTool {
 
         let result = (|| -> ToolResult {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let encoding = args.get("encoding").and_then(|v| v.as_str()).unwrap_or("utf-8");
+            let encoding = args
+                .get("encoding")
+                .and_then(|v| v.as_str())
+                .unwrap_or("utf-8");
             let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let raw_limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let limit_specified = args.get("limit").is_some();
@@ -83,9 +96,11 @@ impl Tool for ReadFileTool {
                         lines_skipped += 1;
                     }
                     if lines_skipped < (start_line - 1) as u64 {
-                        return ToolResult::err(
-                            format!("文件只有 {} 行，不足第 {} 行", lines_skipped + 1, start_line)
-                        );
+                        return ToolResult::err(format!(
+                            "文件只有 {} 行，不足第 {} 行",
+                            lines_skipped + 1,
+                            start_line
+                        ));
                     }
                     byte_pos as usize
                 };
@@ -113,16 +128,24 @@ impl Tool for ReadFileTool {
                         Ok(raw) => {
                             let decoded = match encoding {
                                 "utf-16" => {
-                                    let chars: Vec<u16> = raw.chunks(2)
-                                        .map(|c| u16::from_le_bytes([c[0], c.get(1).copied().unwrap_or(0)]))
+                                    let chars: Vec<u16> = raw
+                                        .chunks(2)
+                                        .map(|c| {
+                                            u16::from_le_bytes([
+                                                c[0],
+                                                c.get(1).copied().unwrap_or(0),
+                                            ])
+                                        })
                                         .collect();
-                                    String::from_utf16(&chars).unwrap_or_else(|_| "(encoding error)".to_string())
+                                    String::from_utf16(&chars)
+                                        .unwrap_or_else(|_| "(encoding error)".to_string())
                                 }
                                 "gbk" => {
                                     let (cow, _, _) = encoding_rs::GBK.decode(&raw);
                                     cow.into_owned()
                                 }
-                                _ => String::from_utf8(raw).unwrap_or_else(|_| "(encoding error)".to_string()),
+                                _ => String::from_utf8(raw)
+                                    .unwrap_or_else(|_| "(encoding error)".to_string()),
                             };
                             content_lines.push(decoded);
                         }
@@ -133,11 +156,21 @@ impl Tool for ReadFileTool {
                 let line_count = content_lines.len();
                 let content = content_lines.join("\n");
                 let result_text = if line_count < max_lines {
-                    format!("（第 {}–{} 行，共 {} 行）\n{}",
-                        start_line, start_line + line_count - 1, line_count, content)
+                    format!(
+                        "（第 {}–{} 行，共 {} 行）\n{}",
+                        start_line,
+                        start_line + line_count - 1,
+                        line_count,
+                        content
+                    )
                 } else {
-                    format!("（第 {}–{} 行，共 {} 行，可能还有更多。增大 limit 继续翻页）\n{}",
-                        start_line, start_line + line_count - 1, line_count, content)
+                    format!(
+                        "（第 {}–{} 行，共 {} 行，可能还有更多。增大 limit 继续翻页）\n{}",
+                        start_line,
+                        start_line + line_count - 1,
+                        line_count,
+                        content
+                    )
                 };
                 return ToolResult::ok(result_text);
             }
@@ -164,13 +197,12 @@ impl Tool for ReadFileTool {
             }
 
             let content = match encoding {
-                "utf-16" => {
-                    String::from_utf16(
-                        &raw.chunks(2)
-                            .map(|c| u16::from_le_bytes([c[0], c.get(1).copied().unwrap_or(0)]))
-                            .collect::<Vec<_>>()
-                    ).unwrap_or_else(|_| "(encoding error)".to_string())
-                }
+                "utf-16" => String::from_utf16(
+                    &raw.chunks(2)
+                        .map(|c| u16::from_le_bytes([c[0], c.get(1).copied().unwrap_or(0)]))
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_else(|_| "(encoding error)".to_string()),
                 "gbk" => {
                     let (cow, _, _) = encoding_rs::GBK.decode(&raw);
                     cow.into_owned()
@@ -180,8 +212,10 @@ impl Tool for ReadFileTool {
 
             let truncated = offset + read_size < file_size;
             let result_text = if truncated {
-                format!("{} (文件共 {} bytes，已截取 {} bytes，共返回 {} bytes。可用 offset 参数翻页)",
-                    content, file_size, byte_limit, read_size)
+                format!(
+                    "{} (文件共 {} bytes，已截取 {} bytes，共返回 {} bytes。可用 offset 参数翻页)",
+                    content, file_size, byte_limit, read_size
+                )
             } else {
                 content
             };
@@ -189,7 +223,11 @@ impl Tool for ReadFileTool {
             ToolResult::ok(result_text)
         })();
 
-        log::info!("[ReadFileTool] execute end: elapsed={:?}, is_error={}", start.elapsed(), result.is_error);
+        log::info!(
+            "[ReadFileTool] execute end: elapsed={:?}, is_error={}",
+            start.elapsed(),
+            result.is_error
+        );
         result
     }
 }
