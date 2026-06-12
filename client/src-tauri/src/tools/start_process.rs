@@ -32,7 +32,7 @@ impl Tool for StartProcessTool {
     }
 
     fn description(&self) -> &'static str {
-        "Launch a program without waiting. Returns PID. Use kill_process to stop it."
+        "Start a long-running process without waiting for completion. Returns PID only; stdout/stderr are not captured. Use this for GUI apps, background services, dev servers, or programs you may later stop with kill_process. For commands where you need stdout/stderr/exit_code, use run_command instead."
     }
 
     fn input_schema(&self) -> Value {
@@ -66,10 +66,7 @@ impl Tool for StartProcessTool {
     }
 
     fn execute(&self, args: &Value) -> ToolResult {
-        let path = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
         if path.is_empty() {
             return ToolResult::err("path is required".to_string());
@@ -89,7 +86,9 @@ impl Tool for StartProcessTool {
 
         log::info!(
             "[StartProcess] path={}, args={:?}, cwd={:?}",
-            path, cli_args, cwd
+            path,
+            cli_args,
+            cwd
         );
 
         let mut cmd = Command::new(path);
@@ -114,5 +113,21 @@ impl Tool for StartProcessTool {
             }
             Err(e) => ToolResult::err(format!("启动失败: {}", e)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StartProcessTool, Tool};
+
+    #[test]
+    fn start_process_description_distinguishes_boundary() {
+        let tool = StartProcessTool { enabled: true };
+        let description = tool.description();
+
+        assert!(description.contains("long-running"));
+        assert!(description.contains("Returns PID only"));
+        assert!(description.contains("stdout/stderr are not captured"));
+        assert!(description.contains("run_command"));
     }
 }
