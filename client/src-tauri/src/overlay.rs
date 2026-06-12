@@ -1,6 +1,4 @@
-use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
 use crate::{ws_client, AppState};
 
@@ -138,26 +136,26 @@ pub(crate) fn toggle_quick_chat(app: &AppHandle) {
     let (x, y) = if let Ok(Some(monitor)) = app.primary_monitor() {
         let logical_width = monitor.size().width as f64 / monitor.scale_factor();
         let logical_height = monitor.size().height as f64 / monitor.scale_factor();
-        ((logical_width - 800.0) / 2.0, (logical_height - 200.0) / 3.0)
+        (
+            (logical_width - 800.0) / 2.0,
+            (logical_height - 200.0) / 3.0,
+        )
     } else {
         (200.0, 200.0)
     };
 
-    if let Ok(window) = WebviewWindowBuilder::new(
-        app,
-        "quick-chat",
-        WebviewUrl::App("quick-chat".into()),
-    )
-    .title("kaya-is-listen-to-you")
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .shadow(false)
-    .inner_size(800.0, 200.0)
-    .position(x, y)
-    .build()
+    if let Ok(window) =
+        WebviewWindowBuilder::new(app, "quick-chat", WebviewUrl::App("quick-chat".into()))
+            .title("kaya-is-listen-to-you")
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .shadow(false)
+            .inner_size(800.0, 200.0)
+            .position(x, y)
+            .build()
     {
         let _ = window.set_focus();
     }

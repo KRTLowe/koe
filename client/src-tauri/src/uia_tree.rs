@@ -30,14 +30,13 @@ mod uia_impl {
         UIA_HeaderItemControlTypeId, UIA_HyperlinkControlTypeId, UIA_ImageControlTypeId,
         UIA_ListControlTypeId, UIA_ListItemControlTypeId, UIA_MenuBarControlTypeId,
         UIA_MenuControlTypeId, UIA_MenuItemControlTypeId, UIA_PaneControlTypeId,
-        UIA_ProgressBarControlTypeId, UIA_RadioButtonControlTypeId,
-        UIA_ScrollBarControlTypeId, UIA_SemanticZoomControlTypeId,
-        UIA_SeparatorControlTypeId, UIA_SliderControlTypeId, UIA_SpinnerControlTypeId,
-        UIA_SplitButtonControlTypeId, UIA_StatusBarControlTypeId, UIA_TabControlTypeId,
-        UIA_TabItemControlTypeId, UIA_TableControlTypeId, UIA_TextControlTypeId,
-        UIA_ThumbControlTypeId, UIA_TitleBarControlTypeId, UIA_ToolBarControlTypeId,
-        UIA_ToolTipControlTypeId, UIA_TreeControlTypeId, UIA_TreeItemControlTypeId,
-        UIA_WindowControlTypeId,
+        UIA_ProgressBarControlTypeId, UIA_RadioButtonControlTypeId, UIA_ScrollBarControlTypeId,
+        UIA_SemanticZoomControlTypeId, UIA_SeparatorControlTypeId, UIA_SliderControlTypeId,
+        UIA_SpinnerControlTypeId, UIA_SplitButtonControlTypeId, UIA_StatusBarControlTypeId,
+        UIA_TabControlTypeId, UIA_TabItemControlTypeId, UIA_TableControlTypeId,
+        UIA_TextControlTypeId, UIA_ThumbControlTypeId, UIA_TitleBarControlTypeId,
+        UIA_ToolBarControlTypeId, UIA_ToolTipControlTypeId, UIA_TreeControlTypeId,
+        UIA_TreeItemControlTypeId, UIA_WindowControlTypeId,
     };
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
@@ -51,12 +50,9 @@ mod uia_impl {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
 
             // Create UIA automation object
-            let automation: IUIAutomation = CoCreateInstance(
-                &CUIAutomation,
-                None,
-                CLSCTX_INPROC_SERVER,
-            )
-            .map_err(|e| format!("UIA unavailable: CoCreateInstance failed ({})", e))?;
+            let automation: IUIAutomation =
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+                    .map_err(|e| format!("UIA unavailable: CoCreateInstance failed ({})", e))?;
 
             // Get foreground window handle
             let hwnd = GetForegroundWindow();
@@ -142,7 +138,15 @@ mod uia_impl {
             if *item_count >= max_items {
                 break;
             }
-            walk_uia_subtree(walker, &current, depth + 1, max_depth, max_items, item_count, lines);
+            walk_uia_subtree(
+                walker,
+                &current,
+                depth + 1,
+                max_depth,
+                max_items,
+                item_count,
+                lines,
+            );
 
             match unsafe { walker.GetNextSiblingElement(&current) } {
                 Ok(next) => current = next,
@@ -170,7 +174,11 @@ mod uia_impl {
                 .ok()
                 .and_then(|b| {
                     let s = b.to_string();
-                    if s.is_empty() { None } else { Some(s) }
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s)
+                    }
                 })
                 .unwrap_or_default()
         };
@@ -218,54 +226,143 @@ mod uia_impl {
         if name.is_empty() {
             format!("{} {} {} {}", indent, ct_name, rect_str, flags.join(" "))
         } else {
-            format!("{} {} \"{}\" {} {}", indent, ct_name, name, rect_str, flags.join(" "))
+            format!(
+                "{} {} \"{}\" {} {}",
+                indent,
+                ct_name,
+                name,
+                rect_str,
+                flags.join(" ")
+            )
         }
     }
 
     /// Map a UIA control type ID (i32) to a human-readable name.
     fn control_type_name(ct: i32) -> String {
         // sorted by ID for binary-search readability (not performance-critical)
-        if ct == UIA_ButtonControlTypeId.0          { return "Button".into(); }
-        if ct == UIA_CalendarControlTypeId.0        { return "Calendar".into(); }
-        if ct == UIA_CheckBoxControlTypeId.0        { return "CheckBox".into(); }
-        if ct == UIA_ComboBoxControlTypeId.0        { return "ComboBox".into(); }
-        if ct == UIA_EditControlTypeId.0            { return "Edit".into(); }
-        if ct == UIA_HyperlinkControlTypeId.0       { return "Hyperlink".into(); }
-        if ct == UIA_ImageControlTypeId.0           { return "Image".into(); }
-        if ct == UIA_ListItemControlTypeId.0        { return "ListItem".into(); }
-        if ct == UIA_ListControlTypeId.0            { return "List".into(); }
-        if ct == UIA_MenuControlTypeId.0            { return "Menu".into(); }
-        if ct == UIA_MenuBarControlTypeId.0         { return "MenuBar".into(); }
-        if ct == UIA_MenuItemControlTypeId.0        { return "MenuItem".into(); }
-        if ct == UIA_ProgressBarControlTypeId.0     { return "ProgressBar".into(); }
-        if ct == UIA_RadioButtonControlTypeId.0     { return "RadioButton".into(); }
-        if ct == UIA_ScrollBarControlTypeId.0       { return "ScrollBar".into(); }
-        if ct == UIA_SliderControlTypeId.0          { return "Slider".into(); }
-        if ct == UIA_SpinnerControlTypeId.0         { return "Spinner".into(); }
-        if ct == UIA_StatusBarControlTypeId.0       { return "StatusBar".into(); }
-        if ct == UIA_TabControlTypeId.0             { return "Tab".into(); }
-        if ct == UIA_TabItemControlTypeId.0         { return "TabItem".into(); }
-        if ct == UIA_TextControlTypeId.0            { return "Text".into(); }
-        if ct == UIA_ToolBarControlTypeId.0         { return "ToolBar".into(); }
-        if ct == UIA_ToolTipControlTypeId.0         { return "ToolTip".into(); }
-        if ct == UIA_TreeControlTypeId.0            { return "Tree".into(); }
-        if ct == UIA_TreeItemControlTypeId.0        { return "TreeItem".into(); }
-        if ct == UIA_CustomControlTypeId.0          { return "Custom".into(); }
-        if ct == UIA_GroupControlTypeId.0           { return "Group".into(); }
-        if ct == UIA_ThumbControlTypeId.0           { return "Thumb".into(); }
-        if ct == UIA_DataGridControlTypeId.0        { return "DataGrid".into(); }
-        if ct == UIA_DataItemControlTypeId.0        { return "DataItem".into(); }
-        if ct == UIA_DocumentControlTypeId.0        { return "Document".into(); }
-        if ct == UIA_SplitButtonControlTypeId.0     { return "SplitButton".into(); }
-        if ct == UIA_WindowControlTypeId.0          { return "Window".into(); }
-        if ct == UIA_PaneControlTypeId.0            { return "Pane".into(); }
-        if ct == UIA_HeaderControlTypeId.0          { return "Header".into(); }
-        if ct == UIA_HeaderItemControlTypeId.0      { return "HeaderItem".into(); }
-        if ct == UIA_TableControlTypeId.0           { return "Table".into(); }
-        if ct == UIA_TitleBarControlTypeId.0        { return "TitleBar".into(); }
-        if ct == UIA_SeparatorControlTypeId.0       { return "Separator".into(); }
-        if ct == UIA_SemanticZoomControlTypeId.0    { return "SemanticZoom".into(); }
-        if ct == UIA_AppBarControlTypeId.0          { return "AppBar".into(); }
+        if ct == UIA_ButtonControlTypeId.0 {
+            return "Button".into();
+        }
+        if ct == UIA_CalendarControlTypeId.0 {
+            return "Calendar".into();
+        }
+        if ct == UIA_CheckBoxControlTypeId.0 {
+            return "CheckBox".into();
+        }
+        if ct == UIA_ComboBoxControlTypeId.0 {
+            return "ComboBox".into();
+        }
+        if ct == UIA_EditControlTypeId.0 {
+            return "Edit".into();
+        }
+        if ct == UIA_HyperlinkControlTypeId.0 {
+            return "Hyperlink".into();
+        }
+        if ct == UIA_ImageControlTypeId.0 {
+            return "Image".into();
+        }
+        if ct == UIA_ListItemControlTypeId.0 {
+            return "ListItem".into();
+        }
+        if ct == UIA_ListControlTypeId.0 {
+            return "List".into();
+        }
+        if ct == UIA_MenuControlTypeId.0 {
+            return "Menu".into();
+        }
+        if ct == UIA_MenuBarControlTypeId.0 {
+            return "MenuBar".into();
+        }
+        if ct == UIA_MenuItemControlTypeId.0 {
+            return "MenuItem".into();
+        }
+        if ct == UIA_ProgressBarControlTypeId.0 {
+            return "ProgressBar".into();
+        }
+        if ct == UIA_RadioButtonControlTypeId.0 {
+            return "RadioButton".into();
+        }
+        if ct == UIA_ScrollBarControlTypeId.0 {
+            return "ScrollBar".into();
+        }
+        if ct == UIA_SliderControlTypeId.0 {
+            return "Slider".into();
+        }
+        if ct == UIA_SpinnerControlTypeId.0 {
+            return "Spinner".into();
+        }
+        if ct == UIA_StatusBarControlTypeId.0 {
+            return "StatusBar".into();
+        }
+        if ct == UIA_TabControlTypeId.0 {
+            return "Tab".into();
+        }
+        if ct == UIA_TabItemControlTypeId.0 {
+            return "TabItem".into();
+        }
+        if ct == UIA_TextControlTypeId.0 {
+            return "Text".into();
+        }
+        if ct == UIA_ToolBarControlTypeId.0 {
+            return "ToolBar".into();
+        }
+        if ct == UIA_ToolTipControlTypeId.0 {
+            return "ToolTip".into();
+        }
+        if ct == UIA_TreeControlTypeId.0 {
+            return "Tree".into();
+        }
+        if ct == UIA_TreeItemControlTypeId.0 {
+            return "TreeItem".into();
+        }
+        if ct == UIA_CustomControlTypeId.0 {
+            return "Custom".into();
+        }
+        if ct == UIA_GroupControlTypeId.0 {
+            return "Group".into();
+        }
+        if ct == UIA_ThumbControlTypeId.0 {
+            return "Thumb".into();
+        }
+        if ct == UIA_DataGridControlTypeId.0 {
+            return "DataGrid".into();
+        }
+        if ct == UIA_DataItemControlTypeId.0 {
+            return "DataItem".into();
+        }
+        if ct == UIA_DocumentControlTypeId.0 {
+            return "Document".into();
+        }
+        if ct == UIA_SplitButtonControlTypeId.0 {
+            return "SplitButton".into();
+        }
+        if ct == UIA_WindowControlTypeId.0 {
+            return "Window".into();
+        }
+        if ct == UIA_PaneControlTypeId.0 {
+            return "Pane".into();
+        }
+        if ct == UIA_HeaderControlTypeId.0 {
+            return "Header".into();
+        }
+        if ct == UIA_HeaderItemControlTypeId.0 {
+            return "HeaderItem".into();
+        }
+        if ct == UIA_TableControlTypeId.0 {
+            return "Table".into();
+        }
+        if ct == UIA_TitleBarControlTypeId.0 {
+            return "TitleBar".into();
+        }
+        if ct == UIA_SeparatorControlTypeId.0 {
+            return "Separator".into();
+        }
+        if ct == UIA_SemanticZoomControlTypeId.0 {
+            return "SemanticZoom".into();
+        }
+        if ct == UIA_AppBarControlTypeId.0 {
+            return "AppBar".into();
+        }
         format!("ControlType({})", ct)
     }
 }

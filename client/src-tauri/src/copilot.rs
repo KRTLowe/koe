@@ -51,7 +51,12 @@ fn get_foreground_window_rect() -> Option<(i32, i32, i32, i32)> {
         if GetWindowRect(hwnd, &mut rect) == 0 {
             return None;
         }
-        Some((rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top))
+        Some((
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+        ))
     }
 }
 
@@ -159,9 +164,7 @@ pub async fn execute_copilot(
     }
 }
 
-pub async fn cancel_copilot(
-    signal_tx: &tokio::sync::mpsc::Sender<ws_client::SignalRequest>,
-) {
+pub async fn cancel_copilot(signal_tx: &tokio::sync::mpsc::Sender<ws_client::SignalRequest>) {
     let clear_req = ws_client::SignalRequest {
         name: "__copilot_clear__".to_string(),
         sticky: false,

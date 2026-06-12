@@ -41,12 +41,18 @@ pub fn execute_tool(name: &str, args: &Value) -> ToolResult {
             if let Ok(mgr) = state.tool_manager.lock() {
                 if let Some(ref mgr) = *mgr {
                     if let Some(result) = mgr.execute(name, args) {
-                        log::info!("[ToolExecutor] tool executed: name={} is_error={} upload={:?}",
-                            name, result.is_error, result.upload_path);
+                        log::info!(
+                            "[ToolExecutor] tool executed: name={} is_error={} upload={:?}",
+                            name,
+                            result.is_error,
+                            result.upload_path
+                        );
                         return ToolResult {
-                            content: result.content.into_iter().map(|c| {
-                                serde_json::json!({"type": "text", "text": c.text})
-                            }).collect(),
+                            content: result
+                                .content
+                                .into_iter()
+                                .map(|c| serde_json::json!({"type": "text", "text": c.text}))
+                                .collect(),
                             is_error: result.is_error,
                             upload_path: result.upload_path,
                         };

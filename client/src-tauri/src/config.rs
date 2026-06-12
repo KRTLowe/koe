@@ -30,7 +30,11 @@ pub struct AppConfig {
 }
 
 fn default_allowed_read_paths() -> Vec<String> {
-    vec!["~/kaya-transfer".into(), "~/Desktop".into(), "~/Documents".into()]
+    vec![
+        "~/kaya-transfer".into(),
+        "~/Desktop".into(),
+        "~/Documents".into(),
+    ]
 }
 
 fn default_allowed_write_paths() -> Vec<String> {
@@ -69,9 +73,7 @@ fn default_tool_permissions() -> HashMap<String, bool> {
 
 impl AppConfig {
     pub fn is_valid(&self) -> bool {
-        !self.server_url.is_empty()
-            && !self.client_id.is_empty()
-            && !self.passkey.is_empty()
+        !self.server_url.is_empty() && !self.client_id.is_empty() && !self.passkey.is_empty()
     }
 }
 

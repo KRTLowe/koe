@@ -33,6 +33,11 @@ pub fn on_file_received(app: &AppHandle, name: &str, size: u64, data: &[u8]) -> 
         let _ = window.set_focus();
     }
 
-    log::info!("File received: {} ({} bytes) -> {}", name, size, save_path.display());
+    log::info!(
+        "File received: {} ({} bytes) -> {}",
+        name,
+        size,
+        save_path.display()
+    );
     Some(save_path)
 }

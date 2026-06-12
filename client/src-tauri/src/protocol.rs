@@ -121,8 +121,10 @@ mod tests {
 
     #[test]
     fn parses_auth_result_message() {
-        let message = ClientboundMessage::parse_text(r#"{"type":"auth_result","ok":false,"error":"auth failed"}"#)
-            .expect("auth_result should parse");
+        let message = ClientboundMessage::parse_text(
+            r#"{"type":"auth_result","ok":false,"error":"auth failed"}"#,
+        )
+        .expect("auth_result should parse");
 
         assert_eq!(
             message,
@@ -135,8 +137,10 @@ mod tests {
 
     #[test]
     fn parses_file_meta_message() {
-        let message = ClientboundMessage::parse_text(r#"{"type":"file_meta","file_id":"f_1","name":"a.png","size":42}"#)
-            .expect("file_meta should parse");
+        let message = ClientboundMessage::parse_text(
+            r#"{"type":"file_meta","file_id":"f_1","name":"a.png","size":42}"#,
+        )
+        .expect("file_meta should parse");
 
         assert_eq!(
             message,
@@ -212,7 +216,10 @@ mod tests {
                     text: "hello".to_string(),
                 },
             ),
-            (r#"{"type":"signal_ack","name":"x","ok":true}"#, ClientboundMessage::SignalAck),
+            (
+                r#"{"type":"signal_ack","name":"x","ok":true}"#,
+                ClientboundMessage::SignalAck,
+            ),
         ];
 
         for (raw, expected) in cases {

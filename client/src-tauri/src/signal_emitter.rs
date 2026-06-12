@@ -27,7 +27,12 @@ impl Signal {
 
     pub fn data(&self) -> Value {
         match self {
-            Signal::VisualInputAvailable { source, timestamp, sticky, priority } => {
+            Signal::VisualInputAvailable {
+                source,
+                timestamp,
+                sticky,
+                priority,
+            } => {
                 serde_json::json!({
                     "source": source,
                     "timestamp": timestamp,
@@ -35,7 +40,11 @@ impl Signal {
                     "priority": priority,
                 })
             }
-            Signal::ClipboardChanged { timestamp, sticky, priority } => {
+            Signal::ClipboardChanged {
+                timestamp,
+                sticky,
+                priority,
+            } => {
                 serde_json::json!({
                     "timestamp": timestamp,
                     "sticky": sticky,

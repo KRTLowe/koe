@@ -58,10 +58,7 @@ pub fn save_file(name: &str, data: &[u8]) -> Result<PathBuf, String> {
     // 如果文件已存在，添加时间戳后缀
     let path = if path.exists() {
         let ts = chrono::Local::now().format("%Y%m%d%H%M%S");
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("file");
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
         let ext = path
             .extension()
             .map(|e| format!(".{}", e.to_str().unwrap_or("")))
@@ -106,5 +103,4 @@ mod tests {
         fr.append_data(vec![]);
         assert!(fr.data.is_empty());
     }
-
 }
