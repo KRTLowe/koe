@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 
@@ -16,4 +17,8 @@ export default defineConfig({
     watch: { ignored: ["**/src-tauri/**"] },
   },
   envPrefix: ["VITE_", "TAURI_"],
+  test: {
+    environment: "node",
+    include: ["src/**/*.spec.ts"],
+  },
 });
