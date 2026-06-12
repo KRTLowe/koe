@@ -4,9 +4,8 @@ use crate::protocol::ClientboundMessage;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
-use sha2::Digest;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
@@ -35,7 +34,7 @@ pub enum WsEvent {
     FileReceived {
         name: String,
         size: u64,
-        data: Vec<u8>,
+        path: PathBuf,
     },
     AcpInject {
         text: String,
@@ -50,9 +49,45 @@ pub enum WsEvent {
     },
 }
 
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+
+    #[test]
+    fn read_next_chunk_returns_one_chunk_at_a_time() {
+        let path = std::env::temp_dir().join(format!(
+            "kaya-upload-chunks-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"abcdefgh").unwrap();
+        let mut file = std::fs::File::open(&path).unwrap();
+
+        assert_eq!(read_next_chunk(&mut file, 3).unwrap(), Some(b"abc".to_vec()));
+        assert_eq!(read_next_chunk(&mut file, 3).unwrap(), Some(b"def".to_vec()));
+        assert_eq!(read_next_chunk(&mut file, 3).unwrap(), Some(b"gh".to_vec()));
+        assert_eq!(read_next_chunk(&mut file, 3).unwrap(), None);
+    }
+}
+
 /// 指数退避重连延迟（秒）
 const RECONNECT_BASE_DELAY: u64 = 1;
 const RECONNECT_MAX_DELAY: u64 = 60;
+const FILE_CHUNK_SIZE: usize = 1024 * 1024;
+
+fn read_next_chunk(file: &mut std::fs::File, chunk_size: usize) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read;
+
+    let mut buf = vec![0_u8; chunk_size];
+    let read = file.read(&mut buf).map_err(|e| e.to_string())?;
+    if read == 0 {
+        return Ok(None);
+    }
+    buf.truncate(read);
+    Ok(Some(buf))
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolDef {
@@ -216,27 +251,49 @@ pub async fn run_client(
                 }
                 upload = upload_rx.recv() => {
                     if let Some(req) = upload {
-                        if let Ok(data) = std::fs::read(&req.file_path) {
-                            let name = Path::new(&req.file_path)
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("file");
-                            let file_id = format!("up_{:x}", std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default().as_nanos());
-                            let start = serde_json::json!({
-                                "type": "file_upload_start", "file_id": file_id,
-                                "name": name, "size": data.len(),
-                            });
-                            let _ = write.send(Message::Text(start.to_string())).await;
-                            let _ = write.send(Message::Binary(data)).await;
-                            let end = serde_json::json!({
-                                "type": "file_upload_end", "file_id": file_id,
-                            });
-                            let _ = write.send(Message::Text(end.to_string())).await;
-                        } else {
-                            log::error!("Upload: failed to read {}", req.file_path);
+                        let name = Path::new(&req.file_path)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("file");
+                        let size = match std::fs::metadata(&req.file_path) {
+                            Ok(meta) => meta.len(),
+                            Err(e) => {
+                                log::error!("Upload: failed to stat {}: {}", req.file_path, e);
+                                continue;
+                            }
+                        };
+                        let mut file = match std::fs::File::open(&req.file_path) {
+                            Ok(file) => file,
+                            Err(e) => {
+                                log::error!("Upload: failed to open {}: {}", req.file_path, e);
+                                continue;
+                            }
+                        };
+                        let file_id = format!("up_{:x}", std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default().as_nanos());
+                        let start = serde_json::json!({
+                            "type": "file_upload_start", "file_id": file_id,
+                            "name": name, "size": size,
+                        });
+                        let _ = write.send(Message::Text(start.to_string())).await;
+                        loop {
+                            let chunk = match read_next_chunk(&mut file, FILE_CHUNK_SIZE) {
+                                Ok(Some(chunk)) => chunk,
+                                Ok(None) => break,
+                                Err(e) => {
+                                    log::error!("Upload: failed to read {}: {}", req.file_path, e);
+                                    break;
+                                }
+                            };
+                            if write.send(Message::Binary(chunk)).await.is_err() {
+                                break 'inner;
+                            }
                         }
+                        let end = serde_json::json!({
+                            "type": "file_upload_end", "file_id": file_id,
+                        });
+                        let _ = write.send(Message::Text(end.to_string())).await;
                     } else {
                         // channel closed, stop listening
                         log::info!("[WSClient] upload_rx closed, breaking inner loop");
@@ -304,43 +361,30 @@ pub async fn run_client(
                             .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("screenshot.png");
-                        let up = upload_path.clone();
-                        let read_result = tokio::task::spawn_blocking(move || {
-                            std::fs::read(&up)
-                        }).await;
-                        match read_result {
-                            Ok(Ok(data)) => {
-                                let file_id = format!("up_{:x}", std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default().as_nanos());
-                                let data_len = data.len();
-                                log::info!("[WSClient] uploading {} bytes as file_id={}", data_len, file_id);
-
-                                let start_upload = std::time::Instant::now();
-                                let start = serde_json::json!({
-                                    "type": "file_upload_start",
-                                    "file_id": file_id,
-                                    "name": name,
-                                    "size": data_len,
+                        let size = match std::fs::metadata(upload_path) {
+                            Ok(meta) => meta.len(),
+                            Err(e) => {
+                                log::info!("[WSClient] stat upload file failed: {}", e);
+                                let response = serde_json::json!({
+                                    "type": "tool_result",
+                                    "request_id": &request_id,
+                                    "content": [{
+                                        "type": "text",
+                                        "text": format!("❌ 读取文件失败: {}", e),
+                                    }],
+                                    "is_error": true,
                                 });
-                                let _ = write.send(Message::Text(start.to_string())).await;
-                                let _ = write.send(Message::Binary(data)).await;
-                                let end = serde_json::json!({
-                                    "type": "file_upload_end",
-                                    "file_id": file_id,
-                                });
-                                let _ = write.send(Message::Text(end.to_string())).await;
-                                log::info!("[WSClient] upload frames sent in {:?}, waiting for file_upload_result...",
-                                    start_upload.elapsed());
-
-                                pending_tool_results.insert(file_id, PendingToolResult {
-                                    request_id,
-                                    file_name: name.to_string(),
-                                    tool_name: tool_name.clone(),
-                                    local_path: upload_path.to_string(),
-                                });
+                                let _ = write.send(Message::Text(response.to_string())).await;
+                                let _ = event_tx.send(WsEvent::ToolCallCompleted {
+                                    name: tool_name,
+                                    is_error: true,
+                                }).await;
+                                continue;
                             }
-                            Ok(Err(e)) => {
+                        };
+                        let mut file = match std::fs::File::open(upload_path) {
+                            Ok(file) => file,
+                            Err(e) => {
                                 log::info!("[WSClient] read upload file failed: {}", e);
                                 let response = serde_json::json!({
                                     "type": "tool_result",
@@ -356,25 +400,63 @@ pub async fn run_client(
                                     name: tool_name,
                                     is_error: true,
                                 }).await;
+                                continue;
                             }
-                            Err(e) => {
-                                log::info!("[WSClient] spawn_blocking for file read panicked: {}", e);
-                                let response = serde_json::json!({
-                                    "type": "tool_result",
-                                    "request_id": &request_id,
-                                    "content": [{
-                                        "type": "text",
-                                        "text": format!("❌ 文件读取线程异常: {}", e),
-                                    }],
-                                    "is_error": true,
+                        };
+                                let file_id = format!("up_{:x}", std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default().as_nanos());
+                                log::info!("[WSClient] uploading {} bytes as file_id={}", size, file_id);
+
+                                let start_upload = std::time::Instant::now();
+                                let start = serde_json::json!({
+                                    "type": "file_upload_start",
+                                    "file_id": file_id,
+                                    "name": name,
+                                    "size": size,
                                 });
-                                let _ = write.send(Message::Text(response.to_string())).await;
-                                let _ = event_tx.send(WsEvent::ToolCallCompleted {
-                                    name: tool_name,
-                                    is_error: true,
-                                }).await;
-                            }
-                        }
+                                let _ = write.send(Message::Text(start.to_string())).await;
+                                loop {
+                                    let chunk = match read_next_chunk(&mut file, FILE_CHUNK_SIZE) {
+                                        Ok(Some(chunk)) => chunk,
+                                        Ok(None) => break,
+                                        Err(e) => {
+                                            log::info!("[WSClient] read upload chunk failed: {}", e);
+                                            let response = serde_json::json!({
+                                                "type": "tool_result",
+                                                "request_id": &request_id,
+                                                "content": [{
+                                                    "type": "text",
+                                                    "text": format!("❌ 读取文件失败: {}", e),
+                                                }],
+                                                "is_error": true,
+                                            });
+                                            let _ = write.send(Message::Text(response.to_string())).await;
+                                            let _ = event_tx.send(WsEvent::ToolCallCompleted {
+                                                name: tool_name,
+                                                is_error: true,
+                                            }).await;
+                                            continue 'inner;
+                                        }
+                                    };
+                                    if write.send(Message::Binary(chunk)).await.is_err() {
+                                        break 'inner;
+                                    }
+                                }
+                                let end = serde_json::json!({
+                                    "type": "file_upload_end",
+                                    "file_id": file_id,
+                                });
+                                let _ = write.send(Message::Text(end.to_string())).await;
+                                log::info!("[WSClient] upload frames sent in {:?}, waiting for file_upload_result...",
+                                    start_upload.elapsed());
+
+                                pending_tool_results.insert(file_id, PendingToolResult {
+                                    request_id,
+                                    file_name: name.to_string(),
+                                    tool_name: tool_name.clone(),
+                                    local_path: upload_path.to_string(),
+                                });
                     } else {
                         log::info!("[WSClient] >>> sending direct tool_result for request_id={}", request_id);
                         let response = serde_json::json!({
@@ -429,61 +511,55 @@ pub async fn run_client(
                                     ClientboundMessage::Pong => {} // 心跳响应
                                     ClientboundMessage::FileMeta { file_id, name, size } => {
                                         log::info!("[WSClient] file_meta: id={} name={} size={}", file_id, name, size);
-                                        file_receive_state = Some(file_handler::FileReceive::new(
-                                            file_id, name, size,
-                                        ));
+                                        match file_handler::FileReceive::new(file_id.clone(), name.clone(), size) {
+                                            Ok(state) => {
+                                                file_receive_state = Some(state);
+                                            }
+                                            Err(error) => {
+                                                log::error!("[WSClient] failed to start file receive: {}", error);
+                                                let _ = event_tx.send(WsEvent::Error(error.clone())).await;
+                                                let _ = write.send(Message::Text(serde_json::json!({
+                                                    "type": "file_ack",
+                                                    "file_id": file_id,
+                                                    "status": "error",
+                                                    "error": error,
+                                                }).to_string().into())).await;
+                                            }
+                                        }
                                     }
                                     ClientboundMessage::FileEnd { file_id, checksum } => {
                                         log::info!("[WSClient] file_end received, processing...");
                                         if let Some(state) = file_receive_state.take() {
                                             let file_id_s = file_id;
-                                            let file_data = state.data;
-                                            let file_name = state.name;
+                                            let received = state.bytes_received();
+                                            let file_name = state.name.clone();
                                             let file_size = state.size;
                                             log::info!("[WSClient] file_end: id={} name={} received={} expected={}",
-                                                file_id_s, file_name, file_data.len(), file_size);
-
-                                            if file_data.len() as u64 != file_size {
-                                                log::info!("[WSClient] file size mismatch: {} != {}", file_data.len(), file_size);
-                                                let _ = event_tx.send(WsEvent::Error(
-                                                    format!("File size mismatch: received {} bytes, expected {} bytes",
-                                                        file_data.len(), file_size),
-                                                )).await;
-                                                let _ = write.send(Message::Text(serde_json::json!({
-                                                    "type": "file_ack",
-                                                    "file_id": file_id_s,
-                                                    "status": "error",
-                                                    "error": "size mismatch",
-                                                }).to_string().into())).await;
-                                                continue;
-                                            }
-
-                                            let mut hasher = sha2::Sha256::new();
-                                            hasher.update(&file_data);
-                                            let hash_hex = format!("sha256:{:x}", hasher.finalize());
-                                            if !checksum.is_empty() && hash_hex != checksum {
-                                                log::info!("[WSClient] checksum mismatch: local={} remote={}", hash_hex, checksum);
-                                                let _ = event_tx.send(WsEvent::Error(
-                                                    "Checksum mismatch".to_string(),
-                                                )).await;
-                                                let _ = write.send(Message::Text(serde_json::json!({
-                                                    "type": "file_ack",
-                                                    "file_id": file_id_s,
-                                                    "status": "error",
-                                                    "error": "checksum mismatch",
-                                                }).to_string().into())).await;
-                                            } else {
-                                                log::info!("[WSClient] file received OK, checksum verified, forwarding to frontend");
-                                                let _ = event_tx.send(WsEvent::FileReceived {
-                                                    name: file_name,
-                                                    size: file_data.len() as u64,
-                                                    data: file_data,
-                                                }).await;
-                                                let _ = write.send(Message::Text(serde_json::json!({
-                                                    "type": "file_ack",
-                                                    "file_id": file_id_s,
-                                                    "status": "ok",
-                                                }).to_string().into())).await;
+                                                file_id_s, file_name, received, file_size);
+                                            match state.finalize(&checksum) {
+                                                Ok(path) => {
+                                                    log::info!("[WSClient] file received OK, checksum verified, forwarding to frontend");
+                                                    let _ = event_tx.send(WsEvent::FileReceived {
+                                                        name: file_name,
+                                                        size: file_size,
+                                                        path,
+                                                    }).await;
+                                                    let _ = write.send(Message::Text(serde_json::json!({
+                                                        "type": "file_ack",
+                                                        "file_id": file_id_s,
+                                                        "status": "ok",
+                                                    }).to_string().into())).await;
+                                                }
+                                                Err(error) => {
+                                                    log::info!("[WSClient] file finalize failed: {}", error);
+                                                    let _ = event_tx.send(WsEvent::Error(error.clone())).await;
+                                                    let _ = write.send(Message::Text(serde_json::json!({
+                                                        "type": "file_ack",
+                                                        "file_id": file_id_s,
+                                                        "status": "error",
+                                                        "error": error,
+                                                    }).to_string().into())).await;
+                                                }
                                             }
                                         } else {
                                             log::info!("[WSClient] file_end but no receive state");
@@ -602,7 +678,9 @@ pub async fn run_client(
                         Some(Ok(Message::Binary(data))) => {
                             log::info!("[WSClient] binary frame: {} bytes", data.len());
                             if let Some(ref mut state) = file_receive_state {
-                                state.append_data(data);
+                                if let Err(error) = state.append_data(data) {
+                                    log::error!("[WSClient] failed to append file chunk: {}", error);
+                                }
                             } else {
                                 log::info!("[WSClient] binary frame but no file_receive_state");
                             }

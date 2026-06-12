@@ -1,5 +1,5 @@
 use crate::file_handler;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
 
 /// 收到文件后的处理逻辑：保存文件 + 通知前端窗口弹出。
@@ -40,4 +40,35 @@ pub fn on_file_received(app: &AppHandle, name: &str, size: u64, data: &[u8]) -> 
         save_path.display()
     );
     Some(save_path)
+}
+
+pub fn file_received_payload(name: &str, size: u64, path: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "size": size,
+        "path": path.to_string_lossy(),
+    })
+}
+
+pub fn on_file_saved(app: &AppHandle, name: &str, size: u64, path: &PathBuf) {
+    let _ = app.emit("file-received", file_received_payload(name, size, path));
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    log::info!("File received: {} ({}) -> {}", name, size, path.display());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_received_payload_contains_saved_path() {
+        let payload = file_received_payload("a.txt", 3, std::path::Path::new("/tmp/a.txt"));
+
+        assert_eq!(payload["name"], "a.txt");
+        assert_eq!(payload["size"], 3);
+        assert_eq!(payload["path"], "/tmp/a.txt");
+    }
 }

@@ -83,16 +83,9 @@ pub(crate) fn start_ws_client(
                         serde_json::json!({ "status": format!("错误: {}", e) }),
                     );
                 }
-                WsEvent::FileReceived { name, size, data } => {
+                WsEvent::FileReceived { name, size, path } => {
                     log::info!("[lib] WS event: FileReceived: name={} size={}", name, size);
-                    if let Some(save_path) = notify::on_file_received(&handle, name, *size, data) {
-                        log::info!(
-                            "[lib] File saved: {} ({}) -> {}",
-                            name,
-                            size,
-                            save_path.display()
-                        );
-                    }
+                    notify::on_file_saved(&handle, name, *size, path);
                 }
                 WsEvent::AcpInject { text } => {
                     log::info!("[lib] WS event: AcpInject rcvd, len={}", text.len());
