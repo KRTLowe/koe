@@ -10,6 +10,7 @@ onMounted(() => {
   if (!appStore.config) {
     appStore.load();
   }
+  fileStore.init();
 });
 
 function formatSize(bytes: number): string {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onMounted } from "vue";
 import { useFileStore } from "../stores/file";
 import { invoke } from "@tauri-apps/api/core";
 import type { TransferRecord } from "../lib/types";
@@ -7,6 +7,10 @@ import type { TransferRecord } from "../lib/types";
 const fileStore = useFileStore();
 const fileInput = ref<HTMLInputElement | null>(null);
 const uploading = ref(false);
+
+onMounted(() => {
+  fileStore.init();
+});
 
 function openFile(record: TransferRecord) {
   if (!record.path) return;

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { sendChatMessage } from "../lib/tauri";
 
 const input = ref("");
 const inputRef = ref<HTMLInputElement | null>(null);
@@ -17,7 +18,7 @@ async function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
   try {
-    await invoke("send_acp_message", { text });
+    await sendChatMessage(text, null);
   } catch { /* ignore */ }
   closeWindow();
 }
