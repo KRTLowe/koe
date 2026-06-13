@@ -142,6 +142,9 @@ pub fn save_file(name: &str, data: &[u8]) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn isolated_home(prefix: &str) -> PathBuf {
         let home = std::env::temp_dir().join(format!(
@@ -158,6 +161,7 @@ mod tests {
 
     #[test]
     fn file_receive_streams_chunks_to_temp_file_and_finalizes() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
         let home = isolated_home("kaya-file-receive-stream");
         std::env::set_var("HOME", &home);
         std::env::set_var("USERPROFILE", &home);
@@ -176,6 +180,7 @@ mod tests {
 
     #[test]
     fn test_file_receive_new() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
         let home = isolated_home("kaya-file-receive-new");
         std::env::set_var("HOME", &home);
         std::env::set_var("USERPROFILE", &home);
@@ -190,6 +195,7 @@ mod tests {
 
     #[test]
     fn test_file_receive_append_data() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
         let home = isolated_home("kaya-file-receive-append");
         std::env::set_var("HOME", &home);
         std::env::set_var("USERPROFILE", &home);
@@ -205,6 +211,7 @@ mod tests {
 
     #[test]
     fn test_file_receive_empty() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
         let home = isolated_home("kaya-file-receive-empty");
         std::env::set_var("HOME", &home);
         std::env::set_var("USERPROFILE", &home);
@@ -219,6 +226,7 @@ mod tests {
 
     #[test]
     fn save_file_strips_path_components_from_received_name() {
+        let _guard = TEST_ENV_LOCK.lock().unwrap();
         let home = std::env::temp_dir().join(format!(
             "kaya-file-handler-test-{}",
             std::time::SystemTime::now()
