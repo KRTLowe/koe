@@ -316,13 +316,39 @@ fn preprocess_det(img: &image::DynamicImage, max_side: u32) -> Result<(Vec<f32>,
     Ok((data, vec![1, 3, rh as i64, rw as i64]))
 }
 
-// ── 检测后处理（同 PP-OCRv5） ────────────────────────
+// ── 检测后处理 ────────────────────────────────────
+
+/// 计算连通域在原图上的平均概率（框置信度）
+fn box_confidence(
+    output: &[f32], out_w: usize, out_h: usize,
+    x1: usize, y1: usize, x2: usize, y2: usize,
+) -> f32 {
+    let x1 = x1.min(out_w - 1);
+    let x2 = x2.min(out_w - 1);
+    let y1 = y1.min(out_h - 1);
+    let y2 = y2.min(out_h - 1);
+    if x2 <= x1 || y2 <= y1 {
+        return 0.0;
+    }
+    let mut sum = 0.0f32;
+    let mut cnt = 0;
+    for by in y1..=y2 {
+        let row = by * out_w;
+        for bx in x1..=x2 {
+            sum += output[row + bx];
+            cnt += 1;
+        }
+    }
+    if cnt > 0 { sum / cnt as f32 } else { 0.0 }
+}
 
 fn dbnet_postprocess(
     output: &[f32],
     out_shape: &[usize],
     orig_size: (u32, u32),
     threshold: f32,
+    unclip_ratio: f32,
+    box_thresh: f32,
 ) -> Vec<[i32; 4]> {
     let (h, w) = if out_shape.len() == 4 && out_shape[1] == 1 {
         (out_shape[2], out_shape[3])
@@ -337,13 +363,12 @@ fn dbnet_postprocess(
     let mut visited = vec![false; h * w];
     let mut boxes: Vec<[i32; 4]> = Vec::new();
 
-        for y in 0..h {
+    for y in 0..h {
         for x in 0..w {
             let idx = y * w + x;
             if visited[idx] {
                 continue;
             }
-            // ONNX 模型输出已含 sigmoid，output[idx] 即为概率
             if output[idx] < threshold {
                 visited[idx] = true;
                 continue;
@@ -375,11 +400,38 @@ fn dbnet_postprocess(
                 }
             }
 
+            let conf = box_confidence(output, w, h, x1, y1, x2, y2);
+            if conf < box_thresh {
+                continue;
+            }
+
+            // Unclip：在输出坐标空间按面积/周长比例扩展
+            let bw = (x2 - x1 + 1) as f32;
+            let bh = (y2 - y1 + 1) as f32;
+            let area = bw * bh;
+            let perimeter = 2.0 * (bw + bh);
+            let dist = if perimeter > 0.0 {
+                (area * unclip_ratio / perimeter).round() as i32
+            } else {
+                0
+            };
+
+            let nx1 = (x1 as i32 - dist).max(0) as usize;
+            let ny1 = (y1 as i32 - dist).max(0) as usize;
+            let nx2 = (x2 as i32 + dist).min(w as i32 - 1) as usize;
+            let ny2 = (y2 as i32 + dist).min(h as i32 - 1) as usize;
+
             let b = [
-                (x1 as f32 * sx).round() as i32,
-                (y1 as f32 * sy).round() as i32,
-                (x2 as f32 * sx).round() as i32,
-                (y2 as f32 * sy).round() as i32,
+                (nx1 as f32 * sx).round() as i32,
+                (ny1 as f32 * sy).round() as i32,
+                (nx2 as f32 * sx).round() as i32,
+                (ny2 as f32 * sy).round() as i32,
+            ];
+            let b = [
+                b[0].max(0).min(orig_size.0 as i32 - 1),
+                b[1].max(0).min(orig_size.1 as i32 - 1),
+                b[2].max(0).min(orig_size.0 as i32 - 1),
+                b[3].max(0).min(orig_size.1 as i32 - 1),
             ];
             if (b[2] - b[0]) >= 3 && (b[3] - b[1]) >= 3 {
                 boxes.push(b);
@@ -607,7 +659,7 @@ impl Tool for OcrTool {
             let shape: Vec<usize> = out_shape.iter().map(|&d| d as usize).collect();
             let data: Vec<f32> = out_data.to_vec();
 
-            Ok(dbnet_postprocess(&data, &shape, (img.width(), img.height()), 0.18))
+            Ok(dbnet_postprocess(&data, &shape, (img.width(), img.height()), 0.18, 1.6, 0.6))
         }) {
             Ok(b) => b,
             Err(e) => return ToolResult::err(e),

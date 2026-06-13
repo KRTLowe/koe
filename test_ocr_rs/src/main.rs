@@ -53,8 +53,33 @@ fn preprocess_det(img: &image::DynamicImage, max_side: u32) -> (Vec<f32>, Vec<i6
     (data, vec![1, 3, rh as i64, rw as i64])
 }
 
-// ── 检测后处理（DBNet 连通域）───────────────────────
-fn dbnet_postprocess(output: &[f32], shape: &[usize], orig_w: u32, orig_h: u32, threshold: f32) -> Vec<[i32; 4]> {
+fn box_confidence(
+    output: &[f32], out_w: usize, out_h: usize,
+    x1: usize, y1: usize, x2: usize, y2: usize,
+) -> f32 {
+    let x1 = x1.min(out_w - 1);
+    let x2 = x2.min(out_w - 1);
+    let y1 = y1.min(out_h - 1);
+    let y2 = y2.min(out_h - 1);
+    if x2 <= x1 || y2 <= y1 { return 0.0; }
+    let mut sum = 0.0f32;
+    let mut cnt = 0;
+    for by in y1..=y2 {
+        let row = by * out_w;
+        for bx in x1..=x2 {
+            sum += output[row + bx];
+            cnt += 1;
+        }
+    }
+    if cnt > 0 { sum / cnt as f32 } else { 0.0 }
+}
+
+// ── 检测后处理（DBNet 连通域 + Unclip）───────────────
+fn dbnet_postprocess(
+    output: &[f32], shape: &[usize],
+    orig_w: u32, orig_h: u32,
+    threshold: f32, unclip_ratio: f32, box_thresh: f32,
+) -> Vec<[i32; 4]> {
     let (h, w) = if shape.len() == 4 && shape[1] == 1 {
         (shape[2], shape[3])
     } else {
@@ -89,11 +114,36 @@ fn dbnet_postprocess(output: &[f32], shape: &[usize], orig_w: u32, orig_h: u32, 
                     }
                 }
             }
+
+            let conf = box_confidence(output, w, h, x1, y1, x2, y2);
+            if conf < box_thresh { continue; }
+
+            let bw = (x2 - x1 + 1) as f32;
+            let bh = (y2 - y1 + 1) as f32;
+            let area = bw * bh;
+            let perimeter = 2.0 * (bw + bh);
+            let dist = if perimeter > 0.0 {
+                (area * unclip_ratio / perimeter).round() as i32
+            } else {
+                0
+            };
+
+            let nx1 = (x1 as i32 - dist).max(0) as usize;
+            let ny1 = (y1 as i32 - dist).max(0) as usize;
+            let nx2 = (x2 as i32 + dist).min(w as i32 - 1) as usize;
+            let ny2 = (y2 as i32 + dist).min(h as i32 - 1) as usize;
+
             let b = [
-                (x1 as f32 * sx).round() as i32,
-                (y1 as f32 * sy).round() as i32,
-                (x2 as f32 * sx).round() as i32,
-                (y2 as f32 * sy).round() as i32,
+                (nx1 as f32 * sx).round() as i32,
+                (ny1 as f32 * sy).round() as i32,
+                (nx2 as f32 * sx).round() as i32,
+                (ny2 as f32 * sy).round() as i32,
+            ];
+            let b = [
+                b[0].max(0).min(orig_w as i32 - 1),
+                b[1].max(0).min(orig_h as i32 - 1),
+                b[2].max(0).min(orig_w as i32 - 1),
+                b[3].max(0).min(orig_h as i32 - 1),
             ];
             if (b[2] - b[0]) >= 3 && (b[3] - b[1]) >= 3 {
                 boxes.push(b);
@@ -224,7 +274,7 @@ fn main() {
     let (det_out_shape, det_out_data) = det_out[0].try_extract_tensor::<f32>().unwrap();
     let shape: Vec<usize> = det_out_shape.iter().map(|&d| d as usize).collect();
     let data: Vec<f32> = det_out_data.to_vec();
-    let boxes = dbnet_postprocess(&data, &shape, img.width(), img.height(), 0.18);
+    let boxes = dbnet_postprocess(&data, &shape, img.width(), img.height(), 0.18, 1.6, 0.6);
     println!("    找到 {} 个文本区域", boxes.len());
 
     if boxes.is_empty() {
