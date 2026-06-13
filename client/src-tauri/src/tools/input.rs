@@ -46,6 +46,8 @@ mod win32 {
         pub fn GetForegroundWindow() -> isize;
         pub fn GetWindowThreadProcessId(hWnd: isize, lpdwProcessId: *mut u32) -> u32;
         pub fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: i32) -> i32;
+        pub fn IsIconic(hWnd: isize) -> i32;
+        pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
     }
 }
 
@@ -183,8 +185,15 @@ fn exec_key_combo(combo: &str) -> Result<(), String> {
 fn bring_window_to_foreground(hwnd: isize) {
     unsafe {
         if win32::GetForegroundWindow() == hwnd {
+            win32::SetFocus(hwnd);
             return;
         }
+        // 最小化窗口先还原
+        if win32::IsIconic(hwnd) != 0 {
+            win32::ShowWindow(hwnd, 9); // SW_RESTORE = 9
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // Alt 键模拟绕过 UIPI，使 SetForegroundWindow 生效
         win32::keybd_event(win32::VK_MENU, 0, 0, 0);
         std::thread::sleep(Duration::from_millis(10));
         win32::keybd_event(win32::VK_MENU, 0, win32::KEYEVENTF_KEYUP, 0);
