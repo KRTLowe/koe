@@ -76,13 +76,10 @@ pub(crate) fn toggle_copilot_window(app: &AppHandle, mode: &str) {
     .skip_taskbar(true)
     .inner_size(560.0, 110.0)
     .position(x, y)
-    .visible(false)
+    .visible(true)
     .build()
     {
-        #[cfg(target_os = "windows")]
-        show_quietly(&window);
-        #[cfg(not(target_os = "windows"))]
-        let _ = window.show();
+        let _ = window.set_focus();
     }
 }
 
