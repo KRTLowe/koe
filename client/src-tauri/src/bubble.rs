@@ -60,7 +60,24 @@ fn reposition_all(app: &AppHandle) {
 
     for (label, x, y) in &positions {
         if let Some(win) = app.get_webview_window(label) {
-            let _ = win.set_position(PhysicalPosition::new(*x as i32, *y as i32));
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(hwnd) = get_hwnd(&win) {
+                    unsafe {
+                        win32::SetWindowPos(
+                            hwnd,
+                            win32::HWND_TOP,
+                            *x as i32, *y as i32,
+                            0, 0,
+                            win32::SWP_NOACTIVATE | win32::SWP_NOZORDER | win32::SWP_NOSIZE,
+                        );
+                    }
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = win.set_position(PhysicalPosition::new(*x as i32, *y as i32));
+            }
         }
     }
 }
@@ -104,9 +121,26 @@ pub(crate) fn resize_bubble(
     }
 
     if let Some(window) = app.get_webview_window(&label) {
-        window
-            .set_size(PhysicalSize::new(338.0, height))
-            .map_err(|e| e.to_string())?;
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(hwnd) = get_hwnd(&window) {
+                unsafe {
+                    win32::SetWindowPos(
+                        hwnd,
+                        win32::HWND_TOP,
+                        0, 0,
+                        BUBBLE_WIDTH as i32, height as i32,
+                        win32::SWP_NOACTIVATE | win32::SWP_NOZORDER | win32::SWP_NOMOVE,
+                    );
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            window
+                .set_size(PhysicalSize::new(338.0, height))
+                .map_err(|e| e.to_string())?;
+        }
     }
 
     reposition_all(&app);
@@ -121,28 +155,60 @@ mod win32 {
         pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
         pub fn GetWindowLongPtrW(hWnd: isize, nIndex: i32) -> isize;
         pub fn SetWindowLongPtrW(hWnd: isize, nIndex: i32, dwNewLong: isize) -> isize;
+        pub fn GetForegroundWindow() -> isize;
+        pub fn SetForegroundWindow(hWnd: isize) -> i32;
+        pub fn SetWindowPos(
+            hWnd: isize,
+            hWndInsertAfter: isize,
+            X: i32,
+            Y: i32,
+            cx: i32,
+            cy: i32,
+            uFlags: u32,
+        ) -> i32;
     }
     pub const SW_SHOWNOACTIVATE: i32 = 4;
     pub const GWL_EXSTYLE: i32 = -20;
     pub const WS_EX_NOACTIVATE: isize = 0x08000000;
+    pub const HWND_TOP: isize = 0;
+    pub const SWP_NOACTIVATE: u32 = 0x0010;
+    pub const SWP_NOZORDER: u32 = 0x0004;
+    pub const SWP_NOMOVE: u32 = 0x0002;
+    pub const SWP_NOSIZE: u32 = 0x0001;
+    pub const SWP_SHOWWINDOW: u32 = 0x0040;
+}
+
+#[cfg(target_os = "windows")]
+fn get_hwnd(window: &impl HasWindowHandle) -> Option<isize> {
+    window.window_handle().ok().and_then(|handle| {
+        if let raw_window_handle::RawWindowHandle::Win32(win32_handle) = handle.as_raw() {
+            Some(win32_handle.hwnd.get() as isize)
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg(target_os = "windows")]
 fn show_quietly(window: &impl HasWindowHandle) {
-    if let Ok(handle) = window.window_handle() {
-        let raw = handle.as_raw();
-        if let raw_window_handle::RawWindowHandle::Win32(win32_handle) = raw {
-            let hwnd = win32_handle.hwnd.get() as isize;
-            unsafe {
-                let ex = win32::GetWindowLongPtrW(hwnd, win32::GWL_EXSTYLE);
-                win32::SetWindowLongPtrW(hwnd, win32::GWL_EXSTYLE, ex | win32::WS_EX_NOACTIVATE);
-                win32::ShowWindow(hwnd, win32::SW_SHOWNOACTIVATE);
-            }
+    if let Some(hwnd) = get_hwnd(window) {
+        unsafe {
+            let ex = win32::GetWindowLongPtrW(hwnd, win32::GWL_EXSTYLE);
+            win32::SetWindowLongPtrW(hwnd, win32::GWL_EXSTYLE, ex | win32::WS_EX_NOACTIVATE);
+            win32::SetWindowPos(
+                hwnd,
+                win32::HWND_TOP,
+                0, 0, 0, 0,
+                win32::SWP_NOACTIVATE | win32::SWP_NOZORDER | win32::SWP_NOMOVE | win32::SWP_NOSIZE | win32::SWP_SHOWWINDOW,
+            );
         }
     }
 }
 
 pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
+    #[cfg(target_os = "windows")]
+    let prev_focus = unsafe { win32::GetForegroundWindow() };
+
     let state = app.state::<AppState>();
 
     let seq = {
@@ -202,6 +268,11 @@ pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
     log::info!("[bubble] created: label={}", label);
 
     reposition_all(app);
+
+    #[cfg(target_os = "windows")]
+    if prev_focus != 0 {
+        unsafe { win32::SetForegroundWindow(prev_focus); }
+    }
 
     label
 }

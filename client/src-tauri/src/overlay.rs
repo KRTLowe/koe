@@ -6,13 +6,26 @@ use crate::{ws_client, AppState};
 #[cfg(target_os = "windows")]
 mod win32 {
     extern "system" {
-        pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
         pub fn GetWindowLongPtrW(hWnd: isize, nIndex: i32) -> isize;
         pub fn SetWindowLongPtrW(hWnd: isize, nIndex: i32, dwNewLong: isize) -> isize;
+        pub fn SetWindowPos(
+            hWnd: isize,
+            hWndInsertAfter: isize,
+            X: i32,
+            Y: i32,
+            cx: i32,
+            cy: i32,
+            uFlags: u32,
+        ) -> i32;
     }
-    pub const SW_SHOWNOACTIVATE: i32 = 4;
     pub const GWL_EXSTYLE: i32 = -20;
     pub const WS_EX_NOACTIVATE: isize = 0x08000000;
+    pub const HWND_TOP: isize = 0;
+    pub const SWP_NOACTIVATE: u32 = 0x0010;
+    pub const SWP_NOZORDER: u32 = 0x0004;
+    pub const SWP_NOMOVE: u32 = 0x0002;
+    pub const SWP_NOSIZE: u32 = 0x0001;
+    pub const SWP_SHOWWINDOW: u32 = 0x0040;
 }
 
 #[cfg(target_os = "windows")]
@@ -24,7 +37,12 @@ fn show_quietly(window: &impl HasWindowHandle) {
             unsafe {
                 let ex = win32::GetWindowLongPtrW(hwnd, win32::GWL_EXSTYLE);
                 win32::SetWindowLongPtrW(hwnd, win32::GWL_EXSTYLE, ex | win32::WS_EX_NOACTIVATE);
-                win32::ShowWindow(hwnd, win32::SW_SHOWNOACTIVATE);
+                win32::SetWindowPos(
+                    hwnd,
+                    win32::HWND_TOP,
+                    0, 0, 0, 0,
+                    win32::SWP_NOACTIVATE | win32::SWP_NOZORDER | win32::SWP_NOMOVE | win32::SWP_NOSIZE | win32::SWP_SHOWWINDOW,
+                );
             }
         }
     }
