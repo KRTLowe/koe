@@ -786,12 +786,8 @@ pub fn run() {
                         }
                     };
                     if !chunk_text.is_empty() {
-                        // 组装 display（由气泡层负责格式）
-                        let new_display = if chunk_thinking.is_empty() {
-                            chunk_text.clone()
-                        } else {
-                            format!("<think>{}</think>\n\n{}", chunk_thinking, chunk_text)
-                        };
+                        // 只展示 text，thinking 仅用于触发 "Kaya is thinking…" 指示
+                        let new_display = chunk_text.clone();
                         let new_len = new_display.len();
                         // 前缀 diff：去掉已展示的部分，只留新增内容
                         let displayed = bg.state::<AppState>().displayed.lock().unwrap().clone();
