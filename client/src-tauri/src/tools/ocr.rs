@@ -190,9 +190,20 @@ fn system_proxy() -> Option<String> {
                             let proxy = line[pos + 1..].trim().to_string();
                             if !proxy.is_empty() && proxy != "直接连接" && proxy != "Direct" {
                                 return Some(proxy);
-                            }
-                        }
-                    }
+        }
+    }
+}
+
+fn safe_preview(s: &str, max_bytes: usize) -> &str {
+    if max_bytes >= s.len() {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
                 }
             }
         }
@@ -708,13 +719,9 @@ impl Tool for OcrTool {
             }
 
             log::info!(
-                "[PaddleOCR] {} words, preview={:?}",
+                "[PaddleOCR] {} words, preview={}",
                 words.len(),
-                if text.len() > 80 {
-                    &text[..80]
-                } else {
-                    &text
-                }
+                safe_preview(&text, 80)
             );
             Ok((words, text))
         }) {
