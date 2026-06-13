@@ -1,6 +1,25 @@
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+#[cfg(target_os = "windows")]
+use tauri::window::WindowExtWindows;
 
 use crate::{ws_client, AppState};
+
+#[cfg(target_os = "windows")]
+mod win32 {
+    extern "system" {
+        pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+    }
+    pub const SW_SHOWNOACTIVATE: i32 = 4;
+}
+
+#[cfg(target_os = "windows")]
+fn show_quietly(window: &impl WindowExtWindows) {
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            win32::ShowWindow(hwnd, win32::SW_SHOWNOACTIVATE);
+        }
+    }
+}
 
 pub(crate) fn toggle_copilot_window(app: &AppHandle, mode: &str) {
     if let Some(window) = app.get_webview_window("copilot-overlay") {
@@ -48,9 +67,13 @@ pub(crate) fn toggle_copilot_window(app: &AppHandle, mode: &str) {
     .skip_taskbar(true)
     .inner_size(560.0, 110.0)
     .position(x, y)
+    .visible(false)
     .build()
     {
-        let _ = window.set_focus();
+        #[cfg(target_os = "windows")]
+        show_quietly(&window);
+        #[cfg(not(target_os = "windows"))]
+        let _ = window.show();
     }
 }
 
@@ -106,7 +129,7 @@ pub(crate) fn show_tool_call_overlay(app: &AppHandle, status: &str, name: &str) 
         (280.0, 52.0, 400.0, 12.0)
     };
 
-    let _ = WebviewWindowBuilder::new(
+    if let Ok(window) = WebviewWindowBuilder::new(
         app,
         "tool-call-overlay",
         WebviewUrl::App(format!("tool-call?status={}&name={}", status, name).into()),
@@ -119,7 +142,14 @@ pub(crate) fn show_tool_call_overlay(app: &AppHandle, status: &str, name: &str) 
     .shadow(false)
     .inner_size(width, height)
     .position(x, y)
-    .build();
+    .visible(false)
+    .build()
+    {
+        #[cfg(target_os = "windows")]
+        show_quietly(&window);
+        #[cfg(not(target_os = "windows"))]
+        let _ = window.show();
+    }
 }
 
 #[tauri::command]

@@ -1,6 +1,8 @@
 use std::time::Instant;
 
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+#[cfg(target_os = "windows")]
+use tauri::window::WindowExtWindows;
 
 use crate::AppState;
 
@@ -114,6 +116,23 @@ pub(crate) fn resize_bubble(
 
 const MAX_BUBBLES: usize = 10;
 
+#[cfg(target_os = "windows")]
+mod win32 {
+    extern "system" {
+        pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+    }
+    pub const SW_SHOWNOACTIVATE: i32 = 4;
+}
+
+#[cfg(target_os = "windows")]
+fn show_quietly(window: &impl WindowExtWindows) {
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            win32::ShowWindow(hwnd, win32::SW_SHOWNOACTIVATE);
+        }
+    }
+}
+
 pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
     let state = app.state::<AppState>();
 
@@ -154,7 +173,7 @@ pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
     }
     *state.last_msg_time.lock().unwrap() = Some(Instant::now());
 
-    let _ = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("bubble".into()))
+    if let Ok(window) = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("bubble".into()))
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
@@ -163,8 +182,14 @@ pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
         .shadow(false)
         .inner_size(BUBBLE_WIDTH, 40.0)
         .position(0.0, 0.0)
-        .visible(true)
-        .build();
+        .visible(false)
+        .build()
+    {
+        #[cfg(target_os = "windows")]
+        show_quietly(&window);
+        #[cfg(not(target_os = "windows"))]
+        let _ = window.show();
+    }
     log::info!("[bubble] created: label={}", label);
 
     reposition_all(app);
