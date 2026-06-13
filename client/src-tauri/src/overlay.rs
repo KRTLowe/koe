@@ -7,8 +7,12 @@ use crate::{ws_client, AppState};
 mod win32 {
     extern "system" {
         pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+        pub fn GetWindowLongPtrW(hWnd: isize, nIndex: i32) -> isize;
+        pub fn SetWindowLongPtrW(hWnd: isize, nIndex: i32, dwNewLong: isize) -> isize;
     }
     pub const SW_SHOWNOACTIVATE: i32 = 4;
+    pub const GWL_EXSTYLE: i32 = -20;
+    pub const WS_EX_NOACTIVATE: isize = 0x08000000;
 }
 
 #[cfg(target_os = "windows")]
@@ -18,6 +22,8 @@ fn show_quietly(window: &impl HasWindowHandle) {
         if let raw_window_handle::RawWindowHandle::Win32(win32_handle) = raw {
             let hwnd = win32_handle.hwnd.get() as isize;
             unsafe {
+                let ex = win32::GetWindowLongPtrW(hwnd, win32::GWL_EXSTYLE);
+                win32::SetWindowLongPtrW(hwnd, win32::GWL_EXSTYLE, ex | win32::WS_EX_NOACTIVATE);
                 win32::ShowWindow(hwnd, win32::SW_SHOWNOACTIVATE);
             }
         }
