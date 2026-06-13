@@ -523,7 +523,8 @@ impl Tool for ActivateWindowTool {
     }
 
     fn description(&self) -> &'static str {
-        "Bring a window to the foreground by HWND. If minimized, restores it first. \
+        "Bring a window to the foreground by HWND. Works for minimized, hidden, or inactive windows — \
+         restores and activates it so it becomes the focused window. \
          Use after get_foreground_window to focus a specific window before other operations."
     }
 
