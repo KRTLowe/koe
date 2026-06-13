@@ -8,25 +8,18 @@ const fileStore = useFileStore();
 const fileInput = ref<HTMLInputElement | null>(null);
 const uploading = ref(false);
 
-// 右键菜单状态
-const ctxMenu = ref<{ show: boolean; x: number; y: number; record: TransferRecord | null }>({
-  show: false,
-  x: 0,
-  y: 0,
-  record: null,
-});
-
 onMounted(() => {
   fileStore.init();
-  document.addEventListener("click", closeCtxMenu);
 });
 
-onUnmounted(() => {
-  document.removeEventListener("click", closeCtxMenu);
-});
-
-function closeCtxMenu() {
-  ctxMenu.value.show = false;
+async function onCtxMenu(e: MouseEvent, record: TransferRecord) {
+  if (!record.path) return;
+  e.preventDefault();
+  try {
+    await invoke("show_file_ctx_menu", { path: record.path });
+  } catch (err) {
+    console.error("Failed to show context menu:", err);
+  }
 }
 
 function openFile(record: TransferRecord) {
@@ -36,18 +29,14 @@ function openFile(record: TransferRecord) {
   });
 }
 
-function onCtxMenu(e: MouseEvent, record: TransferRecord) {
+async function onCtxMenu(e: MouseEvent, record: TransferRecord) {
   if (!record.path) return;
   e.preventDefault();
-  ctxMenu.value = { show: true, x: e.clientX, y: e.clientY, record };
-}
-
-function revealInFolder(record: TransferRecord) {
-  if (!record.path) return;
-  closeCtxMenu();
-  invoke("reveal_in_folder", { path: record.path }).catch((e) => {
-    console.error("Failed to reveal in folder:", e);
-  });
+  try {
+    await invoke("show_file_ctx_menu", { path: record.path });
+  } catch (err) {
+    console.error("Failed to show context menu:", err);
+  }
 }
 
 function triggerFilePick() {
@@ -148,15 +137,6 @@ const history = fileStore.history ?? [];
         </div>
       </div>
     </div>
-
-    <!-- 右键菜单 -->
-    <Teleport to="body">
-      <div v-if="ctxMenu.show" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }">
-        <div class="ctx-item" @click="revealInFolder(ctxMenu.record!)">
-          📂 打开所在文件夹
-        </div>
-      </div>
-    </Teleport>
 
     <!-- Upload -->
     <div class="send-area">
@@ -396,28 +376,4 @@ const history = fileStore.history ?? [];
   cursor: default;
 }
 
-/* 右键菜单 */
-.ctx-menu {
-  position: fixed;
-  z-index: 9999;
-  background: var(--color-surface, #fff);
-  border: 1px solid var(--color-border, #e0e0e0);
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  padding: 4px 0;
-  min-width: 160px;
-}
-
-.ctx-item {
-  padding: 8px 16px;
-  font-size: 13px;
-  cursor: pointer;
-  color: var(--color-text, #333);
-  transition: background 0.12s;
-}
-
-.ctx-item:hover {
-  background: var(--color-primary, #4a90d9);
-  color: #fff;
-}
 </style>

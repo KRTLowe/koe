@@ -95,6 +95,8 @@ pub(crate) struct AppState {
     pub(crate) displayed: Mutex<String>,
     /// "Kaya is thinking…" 气泡的 label，文字到达时关闭
     pub(crate) thinking_bubble_label: Mutex<Option<String>>,
+    /// 文件右键菜单缓存路径
+    pub(crate) ctx_path: Mutex<Option<String>>,
 }
 
 #[tauri::command]
@@ -191,6 +193,31 @@ fn reveal_in_folder(path: String) -> Result<(), String> {
         if let Some(parent) = p.parent() {
             open::that(parent).map_err(|e| format!("打开文件夹失败: {}", e))?;
         }
+    }
+    Ok(())
+}
+
+/// 弹出文件气泡的原生右键菜单。使用 Windows 原生菜单绕过 WebView2 的内置右键菜单。
+#[tauri::command]
+fn show_file_ctx_menu(app: tauri::AppHandle, window: tauri::Window, path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let item = tauri::menu::MenuItemBuilder::with_id("reveal", "打开所在文件夹")
+            .build(&app)
+            .map_err(|e| format!("创建菜单项失败: {}", e))?;
+        let menu = tauri::menu::SubmenuBuilder::new(&app, "")
+            .item(&item)
+            .build()
+            .map_err(|e| format!("创建菜单失败: {}", e))?;
+
+        let state = app.state::<AppState>();
+        *state.ctx_path.lock().unwrap() = Some(path);
+
+        window.popup_menu(&menu).map_err(|e| format!("弹出菜单失败: {}", e))?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, window, path);
     }
     Ok(())
 }
@@ -702,6 +729,7 @@ pub fn run() {
             debounce_last: Mutex::new(Instant::now()),
             displayed: Mutex::new(String::new()),
             thinking_bubble_label: Mutex::new(None),
+            ctx_path: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             load_config, save_config, get_connection_status,
@@ -716,6 +744,7 @@ pub fn run() {
             load_chat_messages, append_chat_message, update_kaya_session_title_from_first_user_message,
             create_or_switch_acp_session,
             load_file_transfer_history, append_file_transfer_record,
+            show_file_ctx_menu,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -913,6 +942,16 @@ pub fn run() {
             });
 
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "reveal" {
+                let state = app.state::<AppState>();
+                let path = state.ctx_path.lock().unwrap().take();
+                drop(state);
+                if let Some(p) = path {
+                    let _ = reveal_in_folder(p);
+                }
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
