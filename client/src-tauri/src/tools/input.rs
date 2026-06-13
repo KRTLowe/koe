@@ -1,3 +1,4 @@
+use std::time::Duration;
 use serde_json::Value;
 
 use super::{Tool, ToolResult};
@@ -40,6 +41,11 @@ mod win32 {
         pub fn SetCursorPos(x: i32, y: i32) -> i32;
         pub fn mouse_event(dwFlags: u32, dx: i32, dy: i32, dwData: u32, dwExtraInfo: usize);
         pub fn VkKeyScanW(ch: u16) -> i16;
+        pub fn SetForegroundWindow(hWnd: isize) -> i32;
+        pub fn SetFocus(hWnd: isize) -> isize;
+        pub fn GetForegroundWindow() -> isize;
+        pub fn GetWindowThreadProcessId(hWnd: isize, lpdwProcessId: *mut u32) -> u32;
+        pub fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: i32) -> i32;
     }
 }
 
@@ -171,6 +177,22 @@ fn exec_key_combo(combo: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 将指定窗口带到前台（绕过 UIPI 限制）。
+/// Alt 键模拟 → SetForegroundWindow → SetFocus
+#[cfg(target_os = "windows")]
+fn bring_window_to_foreground(hwnd: isize) {
+    unsafe {
+        if win32::GetForegroundWindow() == hwnd {
+            return;
+        }
+        win32::keybd_event(win32::VK_MENU, 0, 0, 0);
+        std::thread::sleep(Duration::from_millis(10));
+        win32::keybd_event(win32::VK_MENU, 0, win32::KEYEVENTF_KEYUP, 0);
+        win32::SetForegroundWindow(hwnd);
+        win32::SetFocus(hwnd);
+    }
+}
+
 // ── Tool: type_text ─────────────────────────────────
 
 pub struct TypeTextTool {
@@ -203,7 +225,8 @@ impl Tool for TypeTextTool {
             "type": "object",
             "properties": {
                 "text": { "type": "string", "description": "Text to type" },
-                "end_with_enter": { "type": "boolean", "description": "Press Enter after typing (default: false)" }
+                "end_with_enter": { "type": "boolean", "description": "Press Enter after typing (default: false)" },
+                "hwnd": { "type": "integer", "description": "Window handle to activate before typing (from get_foreground_window)" }
             },
             "required": ["text"]
         })
@@ -231,6 +254,12 @@ impl Tool for TypeTextTool {
                 .get("end_with_enter")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+
+            // 可选：激活目标窗口
+            if let Some(hwnd) = args.get("hwnd").and_then(|v| v.as_i64()) {
+                bring_window_to_foreground(hwnd as isize);
+                std::thread::sleep(Duration::from_millis(30));
+            }
 
             log::info!(
                 "[TypeText] typing {} chars, end_with_enter={}",
@@ -321,7 +350,8 @@ impl Tool for KeyPressTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "keys": { "type": "string", "description": "Key or combo: enter, ctrl+c, alt+tab, f5, ctrl+shift+esc" }
+                "keys": { "type": "string", "description": "Key or combo: enter, ctrl+c, alt+tab, f5, ctrl+shift+esc" },
+                "hwnd": { "type": "integer", "description": "Window handle to activate before pressing (from get_foreground_window)" }
             },
             "required": ["keys"]
         })
@@ -344,6 +374,10 @@ impl Tool for KeyPressTool {
             let keys = args.get("keys").and_then(|v| v.as_str()).unwrap_or("");
             if keys.is_empty() {
                 return ToolResult::err("keys is required".to_string());
+            }
+            if let Some(hwnd) = args.get("hwnd").and_then(|v| v.as_i64()) {
+                bring_window_to_foreground(hwnd as isize);
+                std::thread::sleep(Duration::from_millis(30));
             }
             log::info!("[KeyPress] {}", keys);
             match exec_key_combo(keys) {
@@ -387,7 +421,8 @@ impl Tool for MouseClickTool {
                 "x": { "type": "integer", "description": "Screen X coordinate" },
                 "y": { "type": "integer", "description": "Screen Y coordinate" },
                 "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Mouse button (default: left)" },
-                "clicks": { "type": "integer", "description": "1 for single-click, 2 for double-click (default: 1)" }
+                "clicks": { "type": "integer", "description": "1 for single-click, 2 for double-click (default: 1)" },
+                "hwnd": { "type": "integer", "description": "Window handle to activate before clicking (from get_foreground_window)" }
             },
             "required": ["x", "y"]
         })
@@ -414,6 +449,11 @@ impl Tool for MouseClickTool {
                 .and_then(|v| v.as_str())
                 .unwrap_or("left");
             let clicks = args.get("clicks").and_then(|v| v.as_u64()).unwrap_or(1);
+
+            if let Some(hwnd) = args.get("hwnd").and_then(|v| v.as_i64()) {
+                bring_window_to_foreground(hwnd as isize);
+                std::thread::sleep(Duration::from_millis(30));
+            }
 
             log::info!(
                 "[MouseClick] x={} y={} button={} clicks={}",

@@ -79,6 +79,7 @@ impl ToolManager {
                 Box::new(input::KeyPressTool::new(config)),
                 Box::new(input::MouseClickTool::new(config)),
                 Box::new(ocr::OcrTool::new(config)),
+                Box::new(foreground_window::ForegroundWindowTool::new(config)),
             ],
         }
     }
@@ -160,6 +161,7 @@ impl ToolManager {
 mod clipboard;
 mod file_info;
 mod file_search;
+mod foreground_window;
 mod grep_file;
 mod input;
 mod kill_process;
