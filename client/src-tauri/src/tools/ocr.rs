@@ -659,7 +659,7 @@ impl Tool for OcrTool {
             let shape: Vec<usize> = out_shape.iter().map(|&d| d as usize).collect();
             let data: Vec<f32> = out_data.to_vec();
 
-            Ok(dbnet_postprocess(&data, &shape, (img.width(), img.height()), 0.18, 1.6, 0.6))
+            Ok(dbnet_postprocess(&data, &shape, (img.width(), img.height()), 0.3, 1.5, 0.6))
         }) {
             Ok(b) => b,
             Err(e) => return ToolResult::err(e),

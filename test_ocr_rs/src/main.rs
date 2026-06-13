@@ -274,7 +274,7 @@ fn main() {
     let (det_out_shape, det_out_data) = det_out[0].try_extract_tensor::<f32>().unwrap();
     let shape: Vec<usize> = det_out_shape.iter().map(|&d| d as usize).collect();
     let data: Vec<f32> = det_out_data.to_vec();
-    let boxes = dbnet_postprocess(&data, &shape, img.width(), img.height(), 0.18, 1.6, 0.6);
+    let boxes = dbnet_postprocess(&data, &shape, img.width(), img.height(), 0.3, 1.5, 0.6);
     println!("    找到 {} 个文本区域", boxes.len());
 
     if boxes.is_empty() {
