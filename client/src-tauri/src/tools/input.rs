@@ -195,13 +195,15 @@ impl Tool for TypeTextTool {
     }
     fn description(&self) -> &'static str {
         "Type text at the current keyboard focus. Supports all characters (Chinese, emoji etc. via clipboard paste). \
-         Make sure the target window has focus before calling this."
+         Make sure the target window has focus before calling this. \
+         Use end_with_enter=true to press Enter after typing."
     }
     fn input_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "text": { "type": "string", "description": "Text to type" }
+                "text": { "type": "string", "description": "Text to type" },
+                "end_with_enter": { "type": "boolean", "description": "Press Enter after typing (default: false)" }
             },
             "required": ["text"]
         })
@@ -225,7 +227,16 @@ impl Tool for TypeTextTool {
             if text.is_empty() {
                 return ToolResult::err("text is required".to_string());
             }
-            log::info!("[TypeText] typing {} chars", text.len());
+            let end_with_enter = args
+                .get("end_with_enter")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            log::info!(
+                "[TypeText] typing {} chars, end_with_enter={}",
+                text.len(),
+                end_with_enter
+            );
 
             let all_ascii = text.chars().all(|c| {
                 c.is_ascii()
@@ -244,6 +255,9 @@ impl Tool for TypeTextTool {
                         skipped += 1;
                     }
                 }
+                if end_with_enter {
+                    exec_key_combo("enter").ok();
+                }
                 if skipped > 0 {
                     ToolResult::ok(format!(
                         "已输入 {} 字符（{} 个不支持跳过）",
@@ -254,7 +268,6 @@ impl Tool for TypeTextTool {
                     ToolResult::ok(format!("已输入 {} 字符", text.len()))
                 }
             } else {
-                // 非 ASCII 文本（中文、emoji 等）：通过剪贴板粘贴
                 match arboard::Clipboard::new() {
                     Ok(mut clipboard) => {
                         if let Err(e) = clipboard.set_text(text) {
@@ -265,7 +278,13 @@ impl Tool for TypeTextTool {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
                 match exec_key_combo("ctrl+v") {
-                    Ok(()) => ToolResult::ok(format!("已输入 {} 字符", text.len())),
+                    Ok(()) => {
+                        if end_with_enter {
+                            std::thread::sleep(std::time::Duration::from_millis(30));
+                            exec_key_combo("enter").ok();
+                        }
+                        ToolResult::ok(format!("已输入 {} 字符", text.len()))
+                    }
                     Err(e) => ToolResult::err(format!("粘贴失败: {}", e)),
                 }
             }
