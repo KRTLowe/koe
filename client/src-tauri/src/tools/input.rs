@@ -4,6 +4,12 @@ use serde_json::Value;
 use super::{Tool, ToolResult};
 use crate::config::AppConfig;
 
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{
+    SendInput, INPUT, KEYBDINPUT, INPUT_KEYBOARD,
+    KEYEVENTF_UNICODE, KEYEVENTF_KEYUP,
+};
+
 fn parse_hwnd(val: &Value) -> Option<i64> {
     val.as_i64().or_else(|| {
         val.as_str().and_then(|s| {
@@ -96,6 +102,87 @@ fn type_char(ch: char) -> bool {
     }
     std::thread::sleep(std::time::Duration::from_millis(5));
     true
+}
+
+/// 使用 SendInput + KEYEVENTF_UNICODE 输入非 ASCII 文本。
+/// 纯 ASCII 字符仍走原来的 VkKeyScanW + keybd_event 路径，
+/// 中/日/Emoji 等走 Unicode 直达，不经过剪贴板。
+#[cfg(target_os = "windows")]
+fn type_unicode_text(text: &str) {
+    let mut inputs: Vec<INPUT> = Vec::new();
+    for ch in text.chars() {
+        match ch {
+            '\n' => {
+                inputs.push(INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: windows::Win32::UI::WindowsAndMessaging::INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: win32::VK_RETURN as u16,
+                            wScan: 0,
+                            dwFlags: 0,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                });
+                inputs.push(INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: windows::Win32::UI::WindowsAndMessaging::INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: win32::VK_RETURN as u16,
+                            wScan: 0,
+                            dwFlags: KEYEVENTF_KEYUP,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                });
+            }
+            '\t' => {
+                inputs.push(INPUT { r#type: INPUT_KEYBOARD, Anonymous: windows::Win32::UI::WindowsAndMessaging::INPUT_0 { ki: KEYBDINPUT { wVk: win32::VK_TAB as u16, wScan: 0, dwFlags: 0, time: 0, dwExtraInfo: 0 } } });
+                inputs.push(INPUT { r#type: INPUT_KEYBOARD, Anonymous: windows::Win32::UI::WindowsAndMessaging::INPUT_0 { ki: KEYBDINPUT { wVk: win32::VK_TAB as u16, wScan: 0, dwFlags: KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 } } });
+            }
+            _ => {
+                let code = ch as u32;
+                // UTF-16 代理对
+                let units: &[u16] = &if code <= 0xFFFF {
+                    [code as u16, 0][..1]
+                } else {
+                    let c = code - 0x10000;
+                    [0xD800 | ((c >> 10) as u16), 0xDC00 | (c as u16)]
+                };
+                for &wscan in units {
+                    inputs.push(INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: windows::Win32::UI::WindowsAndMessaging::INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: 0,
+                                wScan: wscan,
+                                dwFlags: KEYEVENTF_UNICODE,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                    inputs.push(INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: windows::Win32::UI::WindowsAndMessaging::INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: 0,
+                                wScan: wscan,
+                                dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                }
+            }
+        }
+    }
+    unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
 }
 
 /// 解析按键组合，返回 [(vk, is_hold)] 序列。
@@ -325,25 +412,12 @@ impl Tool for TypeTextTool {
                     ToolResult::ok(format!("已输入 {} 字符", text.len()))
                 }
             } else {
-                match arboard::Clipboard::new() {
-                    Ok(mut clipboard) => {
-                        if let Err(e) = clipboard.set_text(text) {
-                            return ToolResult::err(format!("写入剪贴板失败: {}", e));
-                        }
-                    }
-                    Err(e) => return ToolResult::err(format!("剪贴板访问失败: {}", e)),
+                type_unicode_text(text);
+                if end_with_enter {
+                    std::thread::sleep(Duration::from_millis(30));
+                    exec_key_combo("enter").ok();
                 }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                match exec_key_combo("ctrl+v") {
-                    Ok(()) => {
-                        if end_with_enter {
-                            std::thread::sleep(std::time::Duration::from_millis(30));
-                            exec_key_combo("enter").ok();
-                        }
-                        ToolResult::ok(format!("已输入 {} 字符", text.len()))
-                    }
-                    Err(e) => ToolResult::err(format!("粘贴失败: {}", e)),
-                }
+                ToolResult::ok(format!("已输入 {} 字符", text.len()))
             }
         }
     }
