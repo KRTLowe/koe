@@ -827,7 +827,7 @@ pub fn run() {
                     tokio::time::sleep(Duration::from_secs(1)).await;
 
                     // 1.5s 去抖：距离上次 chunk 超过 1.5s → 创建气泡
-                    let (chunk_thinking, chunk_text) = {
+                    let (_chunk_thinking, chunk_text) = {
                         let state = bg.state::<AppState>();
                         let last = *state.debounce_last.lock().unwrap();
                         if last.elapsed() > Duration::from_secs_f32(1.5) {

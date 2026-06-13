@@ -221,11 +221,6 @@ pub async fn run_client(
         let (mut write, mut read) = ws_stream.split();
 
         log::info!("[WSClient] sending auth: client_id={}", config.client_id);
-        let auth_msg = serde_json::json!({
-            "type": "auth",
-            "client_id": config.client_id,
-            "passkey": "[REDACTED]",
-        });
         let auth_payload = serde_json::json!({
             "type": "auth",
             "client_id": config.client_id,

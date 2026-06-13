@@ -293,7 +293,6 @@ pub async fn run_acp_client(
                             }
                         } else if started.elapsed() > Duration::from_secs(15) {
                             log::info!("[ACP] health check: timed out after 15s");
-                            zombie_state = None;
                             log::info!("[ACP] zombie: health check timeout, reconnecting");
                             break 'inner;
                         }

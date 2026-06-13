@@ -1,8 +1,6 @@
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use image::GenericImageView;
 use serde_json::Value;
 
 use super::{Tool, ToolResult};
@@ -49,8 +47,6 @@ fn rec_yml_path() -> PathBuf {
 // 我们解析 '...' 之间的内容，索引 0 保留给 CTC blank。
 
 fn parse_char_dict(yml_path: &Path) -> Result<Vec<String>, String> {
-    use std::collections::HashMap;
-
     let content =
         std::fs::read_to_string(yml_path).map_err(|e| format!("读取 {} 失败: {}", yml_path.display(), e))?;
 

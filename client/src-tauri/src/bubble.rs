@@ -9,6 +9,7 @@ const BUBBLE_GAP: f64 = 8.0;
 const BUBBLE_COLUMN_GAP: f64 = 16.0;
 const MIN_SCREEN_TOP: f64 = 20.0;
 
+#[derive(Clone)]
 pub(crate) struct BubbleInfo {
     pub(crate) label: String,
     pub(crate) height: f64,
