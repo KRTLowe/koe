@@ -162,14 +162,9 @@ pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
         .shadow(false)
         .inner_size(BUBBLE_WIDTH, 40.0)
         .position(0.0, 0.0)
-        .visible(false)
+        .visible(true)
         .build();
-    if let Some(win) = app.get_webview_window(&label) {
-        let _ = win.show();
-        log::info!("[bubble] shown: label={}", label);
-    } else {
-        log::info!("[bubble] window not found after build: label={}", label);
-    }
+    log::info!("[bubble] created: label={}", label);
 
     reposition_all(app);
 
