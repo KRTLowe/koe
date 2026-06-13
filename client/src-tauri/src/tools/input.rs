@@ -4,12 +4,6 @@ use serde_json::Value;
 use super::{Tool, ToolResult};
 use crate::config::AppConfig;
 
-#[cfg(target_os = "windows")]
-use windows::Win32::UI::WindowsAndMessaging::{
-    SendInput, INPUT, KEYBDINPUT, INPUT_KEYBOARD,
-    KEYEVENTF_UNICODE, KEYEVENTF_KEYUP,
-};
-
 fn parse_hwnd(val: &Value) -> Option<i64> {
     val.as_i64().or_else(|| {
         val.as_str().and_then(|s| {
@@ -69,7 +63,30 @@ mod win32 {
         pub fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: i32) -> i32;
         pub fn IsIconic(hWnd: isize) -> i32;
         pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
+        pub fn SendInput(cInputs: u32, pInputs: *const INPUT, cbSize: i32) -> u32;
     }
+
+    #[repr(C)]
+    pub struct KEYBDINPUT {
+        pub wVk: u16,
+        pub wScan: u16,
+        pub dwFlags: u32,
+        pub time: u32,
+        pub dwExtraInfo: usize,
+    }
+
+    #[repr(C)]
+    pub struct INPUT {
+        pub type_: u32,
+        pub _pad: u32,
+        pub ki: KEYBDINPUT,
+        pub _extra: [u8; 8], // pad to match MOUSEINPUT size (union member)
+    }
+
+    pub const INPUT_KEYBOARD: u32 = 1;
+    pub const KEYEVENTF_KEYUP: u32 = 0x0002;
+    pub const KEYEVENTF_UNICODE: u32 = 0x0004;
+}
 }
 
 // ── Helpers ─────────────────────────────────────────
@@ -105,83 +122,36 @@ fn type_char(ch: char) -> bool {
 }
 
 /// 使用 SendInput + KEYEVENTF_UNICODE 输入非 ASCII 文本。
-/// 纯 ASCII 字符仍走原来的 VkKeyScanW + keybd_event 路径，
-/// 中/日/Emoji 等走 Unicode 直达，不经过剪贴板。
 #[cfg(target_os = "windows")]
 fn type_unicode_text(text: &str) {
-    let mut inputs: Vec<INPUT> = Vec::new();
+    let mut inputs: Vec<win32::INPUT> = Vec::new();
     for ch in text.chars() {
         match ch {
             '\n' => {
-                inputs.push(INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: windows::Win32::UI::WindowsAndMessaging::INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: win32::VK_RETURN as u16,
-                            wScan: 0,
-                            dwFlags: 0,
-                            time: 0,
-                            dwExtraInfo: 0,
-                        },
-                    },
-                });
-                inputs.push(INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: windows::Win32::UI::WindowsAndMessaging::INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: win32::VK_RETURN as u16,
-                            wScan: 0,
-                            dwFlags: KEYEVENTF_KEYUP,
-                            time: 0,
-                            dwExtraInfo: 0,
-                        },
-                    },
-                });
+                inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, _pad: 0, ki: win32::KEYBDINPUT { wVk: win32::VK_RETURN as u16, wScan: 0, dwFlags: 0, time: 0, dwExtraInfo: 0 }, _extra: [0; 8] });
+                inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, _pad: 0, ki: win32::KEYBDINPUT { wVk: win32::VK_RETURN as u16, wScan: 0, dwFlags: win32::KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 }, _extra: [0; 8] });
             }
             '\t' => {
-                inputs.push(INPUT { r#type: INPUT_KEYBOARD, Anonymous: windows::Win32::UI::WindowsAndMessaging::INPUT_0 { ki: KEYBDINPUT { wVk: win32::VK_TAB as u16, wScan: 0, dwFlags: 0, time: 0, dwExtraInfo: 0 } } });
-                inputs.push(INPUT { r#type: INPUT_KEYBOARD, Anonymous: windows::Win32::UI::WindowsAndMessaging::INPUT_0 { ki: KEYBDINPUT { wVk: win32::VK_TAB as u16, wScan: 0, dwFlags: KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 } } });
+                inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, _pad: 0, ki: win32::KEYBDINPUT { wVk: win32::VK_TAB as u16, wScan: 0, dwFlags: 0, time: 0, dwExtraInfo: 0 }, _extra: [0; 8] });
+                inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, _pad: 0, ki: win32::KEYBDINPUT { wVk: win32::VK_TAB as u16, wScan: 0, dwFlags: win32::KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 }, _extra: [0; 8] });
             }
             _ => {
                 let code = ch as u32;
-                // UTF-16 代理对
-                let units: &[u16] = &if code <= 0xFFFF {
-                    [code as u16, 0][..1]
+                let units = if code <= 0xFFFF {
+                    vec![code as u16]
                 } else {
                     let c = code - 0x10000;
-                    [0xD800 | ((c >> 10) as u16), 0xDC00 | (c as u16)]
+                    vec![0xD800 | ((c >> 10) as u16), 0xDC00 | (c as u16)]
                 };
-                for &wscan in units {
-                    inputs.push(INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: windows::Win32::UI::WindowsAndMessaging::INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: 0,
-                                wScan: wscan,
-                                dwFlags: KEYEVENTF_UNICODE,
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    });
-                    inputs.push(INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: windows::Win32::UI::WindowsAndMessaging::INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: 0,
-                                wScan: wscan,
-                                dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    });
+                for wscan in units {
+                    inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, _pad: 0, ki: win32::KEYBDINPUT { wVk: 0, wScan, dwFlags: win32::KEYEVENTF_UNICODE, time: 0, dwExtraInfo: 0 }, _extra: [0; 8] });
+                    inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, _pad: 0, ki: win32::KEYBDINPUT { wVk: 0, wScan, dwFlags: win32::KEYEVENTF_UNICODE | win32::KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 }, _extra: [0; 8] });
                 }
             }
         }
     }
     unsafe {
-        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        win32::SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<win32::INPUT>() as i32);
     }
 }
 

@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use raw_window_handle::HasWindowHandle;
-use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
 use crate::AppState;
 
