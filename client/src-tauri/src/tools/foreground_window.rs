@@ -128,6 +128,7 @@ impl Tool for ForegroundWindowTool {
 
                 let result = serde_json::json!({
                     "hwnd": hwnd as usize,
+                    "hwnd_hex": format!("0x{:x}", hwnd),
                     "title": title,
                     "process": process_name,
                     "pid": pid,

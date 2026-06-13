@@ -4,6 +4,21 @@ use serde_json::Value;
 use super::{Tool, ToolResult};
 use crate::config::AppConfig;
 
+fn parse_hwnd(val: &Value) -> Option<i64> {
+    val.as_i64().or_else(|| {
+        val.as_str().and_then(|s| {
+            let s = s.trim();
+            if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                i64::from_str_radix(hex, 16).ok()
+            } else {
+                s.parse::<i64>().ok()
+            }
+        })
+    })
+}
+
+/// 解析 hwnd 参数：支持整数和 "0x..." 十六进制字符串
+
 // ── Win32 FFI ───────────────────────────────────────
 
 #[cfg(target_os = "windows")]
@@ -242,7 +257,7 @@ impl Tool for TypeTextTool {
             "properties": {
                 "text": { "type": "string", "description": "Text to type" },
                 "end_with_enter": { "type": "boolean", "description": "Press Enter after typing (default: false)" },
-                "hwnd": { "type": "integer", "description": "Window handle to activate before typing (from get_foreground_window)" }
+                "hwnd": { "type": "string", "description": "Window handle to activate before typing (e.g. 593428 or 0x90e14, from get_foreground_window or list_windows)" }
             },
             "required": ["text"]
         })
@@ -271,7 +286,7 @@ impl Tool for TypeTextTool {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            if let Some(hwnd) = args.get("hwnd").and_then(|v| v.as_i64()) {
+            if let Some(hwnd) = args.get("hwnd").and_then(parse_hwnd) {
                 log::info!("[TypeText] activating window hwnd=0x{:x}", hwnd);
                 bring_window_to_foreground(hwnd as isize);
                 std::thread::sleep(Duration::from_millis(50));
@@ -364,7 +379,7 @@ impl Tool for KeyPressTool {
             "type": "object",
             "properties": {
                 "keys": { "type": "string", "description": "Key or combo: enter, ctrl+c, alt+tab, f5, ctrl+shift+esc" },
-                "hwnd": { "type": "integer", "description": "Window handle to activate before pressing (from get_foreground_window)" }
+                "hwnd": { "type": "string", "description": "Window handle to activate before pressing (e.g. 593428 or 0x90e14, from get_foreground_window)" }
             },
             "required": ["keys"]
         })
@@ -388,7 +403,7 @@ impl Tool for KeyPressTool {
             if keys.is_empty() {
                 return ToolResult::err("keys is required".to_string());
             }
-            if let Some(hwnd) = args.get("hwnd").and_then(|v| v.as_i64()) {
+            if let Some(hwnd) = args.get("hwnd").and_then(parse_hwnd) {
                 log::info!("[KeyPress] activating window hwnd=0x{:x}", hwnd);
                 bring_window_to_foreground(hwnd as isize);
                 std::thread::sleep(Duration::from_millis(50));
@@ -436,7 +451,7 @@ impl Tool for MouseClickTool {
                 "y": { "type": "integer", "description": "Screen Y coordinate" },
                 "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Mouse button (default: left)" },
                 "clicks": { "type": "integer", "description": "1 for single-click, 2 for double-click (default: 1)" },
-                "hwnd": { "type": "integer", "description": "Window handle to activate before clicking (from get_foreground_window)" }
+                "hwnd": { "type": "string", "description": "Window handle to activate before clicking (e.g. 593428 or 0x90e14, from get_foreground_window)" }
             },
             "required": ["x", "y"]
         })
@@ -464,7 +479,7 @@ impl Tool for MouseClickTool {
                 .unwrap_or("left");
             let clicks = args.get("clicks").and_then(|v| v.as_u64()).unwrap_or(1);
 
-            if let Some(hwnd) = args.get("hwnd").and_then(|v| v.as_i64()) {
+            if let Some(hwnd) = args.get("hwnd").and_then(parse_hwnd) {
                 log::info!("[MouseClick] activating window hwnd=0x{:x}", hwnd);
                 bring_window_to_foreground(hwnd as isize);
                 std::thread::sleep(Duration::from_millis(50));
@@ -532,7 +547,7 @@ impl Tool for ActivateWindowTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "hwnd": { "type": "integer", "description": "Window handle to activate (from get_foreground_window)" }
+                "hwnd": { "type": "string", "description": "Window handle to activate (e.g. 593428 or 0x90e14, from get_foreground_window)" }
             },
             "required": ["hwnd"]
         })
@@ -555,7 +570,7 @@ impl Tool for ActivateWindowTool {
 
         #[cfg(target_os = "windows")]
         {
-            let hwnd = args.get("hwnd").and_then(|v| v.as_i64()).unwrap_or(0);
+            let hwnd = parse_hwnd(args.get("hwnd").unwrap_or(&Value::Null)).unwrap_or(0);
             if hwnd == 0 {
                 return ToolResult::err("hwnd is required".to_string());
             }
