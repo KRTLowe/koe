@@ -87,7 +87,6 @@ mod win32 {
     pub const KEYEVENTF_KEYUP: u32 = 0x0002;
     pub const KEYEVENTF_UNICODE: u32 = 0x0004;
 }
-}
 
 // ── Helpers ─────────────────────────────────────────
 
