@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted } from "vue";
 import { useFileStore } from "../stores/file";
 import { invoke } from "@tauri-apps/api/core";
 import type { TransferRecord } from "../lib/types";
@@ -27,16 +27,6 @@ function openFile(record: TransferRecord) {
   invoke("open_file", { path: record.path }).catch((e) => {
     console.error("Failed to open file:", e);
   });
-}
-
-async function onCtxMenu(e: MouseEvent, record: TransferRecord) {
-  if (!record.path) return;
-  e.preventDefault();
-  try {
-    await invoke("show_file_ctx_menu", { path: record.path });
-  } catch (err) {
-    console.error("Failed to show context menu:", err);
-  }
 }
 
 function triggerFilePick() {
