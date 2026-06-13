@@ -32,6 +32,11 @@ walkdir = "2"
 encoding_rs = "0.8"
 regex = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
+ort = { version = "2.0.0-rc.12", features = ["copy-dylibs", "download-binaries", "ndarray"] }
+ndarray = { version = "0.17", features = ["std"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+imageproc = "0.25"
+ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
 windows = { version = "0.58", features = [
     "Media_Ocr",
     "Graphics_Imaging",
