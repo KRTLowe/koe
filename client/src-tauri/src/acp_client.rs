@@ -449,6 +449,32 @@ pub async fn run_acp_client(
                                             if let Some(update) = update {
                                                 let update_type = update.get("sessionUpdate").and_then(|s| s.as_str());
                                                 match update_type {
+                                                    Some("agent_thought_chunk") => {
+                                                        // opencode 的 thinking 流：content.text 是思考过程
+                                                        let raw_len = update
+                                                            .get("content")
+                                                            .and_then(|c| c.get("text"))
+                                                            .and_then(|t| t.as_str())
+                                                            .map(str::len)
+                                                            .unwrap_or(0);
+                                                        log::info!(
+                                                            "[ACP][chunk] sessionUpdate=agent_thought_chunk raw_len={}",
+                                                            raw_len,
+                                                        );
+                                                        if let Some(text) = update.get("content").and_then(|c| c.get("text")).and_then(|t| t.as_str()) {
+                                                            response_thinking.push_str(text);
+                                                            log::info!(
+                                                                "[ACP][chunk] agent_thought_chunk appended: chunk_len={} total_thinking_len={} preview={}",
+                                                                text.len(),
+                                                                response_thinking.len(),
+                                                                safe_truncate(text, 80),
+                                                            );
+                                                        }
+                                                        let _ = event_tx.try_send(AcpEvent::StreamChunk {
+                                                            response_text: response_text.clone(),
+                                                            response_thinking: response_thinking.clone(),
+                                                        });
+                                                    }
                                                     Some("agent_message_chunk") => {
                                                         let content_type = update.get("content").and_then(|c| c.get("type")).and_then(|t| t.as_str());
                                                         let raw_text_len = update

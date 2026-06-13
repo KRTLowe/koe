@@ -27,3 +27,4 @@ dist/
 # Brainstorming visual companion artifacts
 .superpowers/
 .worktrees/
+AGENTS.md
