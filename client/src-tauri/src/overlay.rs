@@ -1,6 +1,5 @@
+use raw_window_handle::HasWindowHandle;
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
-#[cfg(target_os = "windows")]
-use tauri::window::WindowExtWindows;
 
 use crate::{ws_client, AppState};
 
@@ -13,10 +12,14 @@ mod win32 {
 }
 
 #[cfg(target_os = "windows")]
-fn show_quietly(window: &impl WindowExtWindows) {
-    if let Ok(hwnd) = window.hwnd() {
-        unsafe {
-            win32::ShowWindow(hwnd, win32::SW_SHOWNOACTIVATE);
+fn show_quietly(window: &impl HasWindowHandle) {
+    if let Ok(handle) = window.window_handle() {
+        let raw = handle.as_raw();
+        if let raw_window_handle::RawWindowHandle::Win32(win32_handle) = raw {
+            let hwnd = win32_handle.hwnd.get() as isize;
+            unsafe {
+                win32::ShowWindow(hwnd, win32::SW_SHOWNOACTIVATE);
+            }
         }
     }
 }
