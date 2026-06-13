@@ -404,9 +404,9 @@ fn dbnet_postprocess(
                     if output[ni] >= threshold {
                         visited[ni] = true;
                         q.push((nx as usize, ny as usize));
-                    }
-                }
-            }
+        }
+    }
+}
 
             let conf = box_confidence(output, w, h, x1, y1, x2, y2);
             if conf < box_thresh {
