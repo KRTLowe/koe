@@ -53,67 +53,75 @@ pub(crate) fn start_acp_client(
                     }
                     let _ = handle.emit("acp-status", serde_json::json!({"status": "已断开"}));
                 }
+                AcpEvent::ThinkChunk => {
+                    let state = handle.state::<AppState>();
+                    let mut label = state.thinking_bubble_label.lock().unwrap();
+                    if label.is_none() {
+                        // 创建 thinking 气泡，BubblePage 检测到 __THINKING__ 会显示 spinner + "卡雅思考中"
+                        let lbl = create_message_bubble(&handle, "__THINKING__");
+                        log::info!("[ACP][runtime] thinking bubble created: label={}", lbl);
+                        *label = Some(lbl);
+                    }
+                    // 每次 ThinkChunk 重置 5s 超时
+                    let lbl = label.clone().unwrap();
+                    drop(label);
+                    let h = handle.clone();
+                    // 取消之前的 5s 定时器（通过新的 spawn 覆盖旧的行为）
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        let state = h.state::<AppState>();
+                        let mut guard = state.thinking_bubble_label.lock().unwrap();
+                        // 只在 label 仍然是同一个时才关闭（防竞态）
+                        if guard.as_deref() == Some(&lbl) {
+                            guard.take();
+                            drop(guard);
+                            close_bubble_by_label(&h, &lbl);
+                            log::info!("[ACP][runtime] thinking bubble closed by 5s timeout: label={}", lbl);
+                        }
+                    });
+                }
                 AcpEvent::StreamChunk {
                     response_text,
                     response_thinking,
                 } => {
-                    log::info!(
-                        "[ACP][runtime] StreamChunk received: text_len={} thinking_len={} text_preview={} thinking_preview={}",
+                    log::debug!(
+                        "[ACP][runtime] StreamChunk received: text_len={} thinking_len={} text_preview={}",
                         response_text.len(),
                         response_thinking.len(),
                         safe_preview(response_text, 80),
-                        safe_preview(response_thinking, 80),
                     );
-                    let _ =
-                        handle.emit("acp-message", serde_json::json!({"content": response_text}));
                     let state = handle.state::<AppState>();
+                    // text 开始输出 → 关闭 thinking 气泡
+                    if !response_text.trim().is_empty() {
+                        let mut label = state.thinking_bubble_label.lock().unwrap();
+                        if let Some(lbl) = label.take() {
+                            drop(label);
+                            close_bubble_by_label(&handle, &lbl);
+                            log::info!("[ACP][runtime] thinking bubble closed by text start: label={}", lbl);
+                        }
+                    }
+                    // 只在 text 真正变化时才 emit acp-message，避免前端重复渲染
+                    {
+                        let mut displayed = state.displayed.lock().unwrap();
+                        if *response_text != *displayed {
+                            *displayed = response_text.clone();
+                            drop(displayed);
+                            let _ = handle.emit("acp-message", serde_json::json!({"content": response_text}));
+                        }
+                    }
                     *state.debounce_thinking.lock().unwrap() = response_thinking.clone();
                     *state.debounce_text.lock().unwrap() = response_text.clone();
                     *state.debounce_last.lock().unwrap() = Instant::now();
-
-                    // ── thinking 状态气泡 ──
-                    // 只有在 thinking 流有内容、text 流还没开始时才展示
-                    if !response_thinking.trim().is_empty() && response_text.trim().is_empty() {
-                        let mut label = state.thinking_bubble_label.lock().unwrap();
-                        if label.is_none() {
-                            let lbl = create_message_bubble(&handle, "Kaya is thinking…");
-                            log::info!(
-                                "[ACP][runtime] thinking bubble created: label={} content=Kaya is thinking…",
-                                lbl,
-                            );
-                            *label = Some(lbl);
-                        } else {
-                            log::info!(
-                                "[ACP][runtime] thinking bubble already visible: label={}",
-                                label.as_deref().unwrap_or("<none>"),
-                            );
-                        }
-                    } else if !response_text.trim().is_empty() {
-                        // text 开始输出 → 关闭 thinking 气泡（如果还开着）
-                        let mut label = state.thinking_bubble_label.lock().unwrap();
-                        if let Some(lbl) = label.take() {
-                            log::info!(
-                                "[ACP][runtime] thinking bubble closing because text started: label={} text_len={}",
-                                lbl,
-                                response_text.len(),
-                            );
-                            drop(label);
-                            close_bubble_by_label(&handle, &lbl);
-                        } else {
-                            log::info!(
-                                "[ACP][runtime] no thinking bubble to close; text already present text_len={} thinking_len={}",
-                                response_text.len(),
-                                response_thinking.len(),
-                            );
-                        }
-                    } else {
-                        log::info!(
-                            "[ACP][runtime] StreamChunk has neither visible thinking nor text"
-                        );
-                    }
                 }
                 AcpEvent::ResponseDone { response_text } => {
                     let state = handle.state::<AppState>();
+                    // 关闭 thinking 气泡
+                    let mut label = state.thinking_bubble_label.lock().unwrap();
+                    if let Some(lbl) = label.take() {
+                        drop(label);
+                        close_bubble_by_label(&handle, &lbl);
+                        log::info!("[ACP][runtime] thinking bubble closed on ResponseDone: label={}", lbl);
+                    }
                     let current_kaya_session_id = state.current_kaya_session_id.lock().unwrap().clone();
                     let remote_session_id = state.session_id.lock().unwrap().clone();
 
@@ -146,26 +154,13 @@ pub(crate) fn start_acp_client(
                                 )
                                 .map(|_| ())
                             }) {
-                            Ok(()) => log::info!("[ACP][runtime] persisted assistant reply for kaya_session={} len={}", kaya_session_id, response_text.len()),
+                            Ok(()) => log::debug!("[ACP][runtime] persisted assistant reply for kaya_session={} len={}", kaya_session_id, response_text.len()),
                             Err(e) => log::error!("[ACP][runtime] failed to persist assistant reply: {}", e),
                         }
                     }
 
                     let _ = handle.emit("acp-done", serde_json::json!({"done": true}));
-                    // 回复完成，立即冲刷去抖缓冲（把 last 设到过去让下一个 tick 直接触发）
                     *state.debounce_last.lock().unwrap() = Instant::now() - Duration::from_secs(10);
-                    // 关闭 thinking 气泡（防止只有 thinking 没有 text 的边界情况）
-                    let mut label = state.thinking_bubble_label.lock().unwrap();
-                    if let Some(lbl) = label.take() {
-                        log::info!(
-                            "[ACP][runtime] thinking bubble closing on ResponseDone: label={}",
-                            lbl,
-                        );
-                        drop(label);
-                        close_bubble_by_label(&handle, &lbl);
-                    } else {
-                        log::info!("[ACP][runtime] ResponseDone with no thinking bubble visible");
-                    }
                 }
                 AcpEvent::SessionReady { session_id } => {
                     if let Some(s) = handle.try_state::<AppState>() {

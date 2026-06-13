@@ -10,6 +10,7 @@ export interface AppConfig {
   allowedWritePaths?: string[];
   deniedExtensions?: string[];
   toolPermissions?: Record<string, boolean>;
+  logLevel?: string;
 }
 
 export interface FileTransferRecord {

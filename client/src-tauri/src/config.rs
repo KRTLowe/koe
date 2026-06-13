@@ -27,6 +27,8 @@ pub struct AppConfig {
     pub denied_extensions: Vec<String>,
     #[serde(default = "default_tool_permissions")]
     pub tool_permissions: HashMap<String, bool>,
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
 }
 
 fn default_allowed_read_paths() -> Vec<String> {
@@ -44,6 +46,8 @@ fn default_allowed_write_paths() -> Vec<String> {
 fn default_denied_extensions() -> Vec<String> {
     vec!["exe".into(), "dll".into(), "sys".into(), "bin".into()]
 }
+
+fn default_log_level() -> String { "info".to_string() }
 
 fn default_tool_permissions() -> HashMap<String, bool> {
     HashMap::from([

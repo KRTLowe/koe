@@ -153,6 +153,49 @@ fn open_file(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_log_level(level: String) {
+    use log::LevelFilter;
+    let filter = match level.to_lowercase().as_str() {
+        "error" => LevelFilter::Error,
+        "warn" => LevelFilter::Warn,
+        "info" => LevelFilter::Info,
+        "debug" => LevelFilter::Debug,
+        "trace" => LevelFilter::Trace,
+        "off" => LevelFilter::Off,
+        _ => LevelFilter::Info,
+    };
+    log::set_max_level(filter);
+}
+
+#[tauri::command]
+fn reveal_in_folder(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        // 文件可能已被删除，尝试打开其父目录
+        if let Some(parent) = p.parent() {
+            return open::that(parent).map_err(|e| format!("打开文件夹失败: {}", e));
+        }
+        return Err("文件路径不存在".to_string());
+    }
+    #[cfg(windows)]
+    {
+        // explorer /select,"C:\path\to\file" → 选中文件并打开所在文件夹
+        std::process::Command::new("explorer")
+            .arg("/select,")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("打开文件夹失败: {}", e))?;
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(parent) = p.parent() {
+            open::that(parent).map_err(|e| format!("打开文件夹失败: {}", e))?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn get_session_id(state: tauri::State<AppState>) -> Result<Option<String>, String> {
     Ok(state.session_id.lock().map_err(|e| e.to_string())?.clone())
 }
@@ -662,7 +705,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             load_config, save_config, get_connection_status,
-            open_file, send_acp_message, send_chat_message, start_acp, get_session_id,
+            open_file, reveal_in_folder, set_log_level, send_acp_message, send_chat_message, start_acp, get_session_id,
             upload_file, upload_file_data, send_signal,
             execute_copilot, cancel_copilot,
             copilot_enter_monitor, copilot_close,
@@ -680,6 +723,20 @@ pub fn run() {
             let cfg = load_config_impl(&handle);
             let state = app.state::<AppState>();
             *state.config.lock().unwrap() = cfg.clone();
+
+            // 根据配置设置日志级别
+            if let Some(ref config) = cfg {
+                let filter = match config.log_level.to_lowercase().as_str() {
+                    "error" => LevelFilter::Error,
+                    "warn" => LevelFilter::Warn,
+                    "info" => LevelFilter::Info,
+                    "debug" => LevelFilter::Debug,
+                    "trace" => LevelFilter::Trace,
+                    "off" => LevelFilter::Off,
+                    _ => LevelFilter::Info,
+                };
+                log::set_max_level(filter);
+            }
 
             // 初始化 ToolManager
             if let Some(ref config) = cfg {
@@ -798,7 +855,7 @@ pub fn run() {
                         };
                         // 更新已展示的 display
                         *bg.state::<AppState>().displayed.lock().unwrap() = new_display;
-                        log::info!(
+                        log::debug!(
                             "[bubble] prefix diff: displayed={} new={} remaining={} remaining_preview={}",
                             displayed.len(),
                             new_len,

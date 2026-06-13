@@ -45,6 +45,10 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = open::that(dir);
             }
             "quit" => {
+                // 先关主窗口 → 触发 WebView2 环境清理，减少子进程残留
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.close();
+                }
                 app.exit(0);
             }
             _ => {}

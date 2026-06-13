@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { useAppStore } from "../stores/app";
 import type { AppConfig } from "../lib/types";
+import { invoke } from "@tauri-apps/api/core";
 
 const appStore = useAppStore();
 
@@ -13,6 +14,7 @@ const form = ref<AppConfig>({
   storagePath: appStore.config?.storagePath || "~/kaya-transfer/",
   acpCwd: appStore.config?.acpCwd || "",
   floatImage: appStore.config?.floatImage || "kaya-float",
+  logLevel: appStore.config?.logLevel || "info",
   allowedReadPaths: appStore.config?.allowedReadPaths || ["~/kaya-transfer", "~/Desktop", "~/Documents"],
   allowedWritePaths: appStore.config?.allowedWritePaths || ["~/kaya-transfer", "~/Desktop"],
   deniedExtensions: appStore.config?.deniedExtensions || [".exe", ".dll", ".sys", ".bin"],
@@ -32,6 +34,8 @@ async function handleSave() {
       form.value.acpUrl = `ws://${host}:8765`;
     }
     await appStore.save(form.value);
+    // 实时应用日志级别
+    try { await invoke("set_log_level", { level: form.value.logLevel }); } catch {}
     saved.value = true;
     setTimeout(() => { saved.value = false; }, 3000);
   } catch (e) {
@@ -151,6 +155,23 @@ function removePath(list: string[], index: number) {
       </div>
     </div>
 
+    <!-- 日志 -->
+    <div class="form-section">
+      <div class="section-title">📝 客户端日志</div>
+      <div class="form-group">
+        <label class="form-label">日志级别</label>
+        <select v-model="form.logLevel" class="form-select">
+          <option value="error">Error</option>
+          <option value="warn">Warn</option>
+          <option value="info">Info</option>
+          <option value="debug">Debug</option>
+          <option value="trace">Trace</option>
+          <option value="off">关闭</option>
+        </select>
+        <div class="form-hint">设为 Debug 可查看详细执行日志，设为 Off 完全关闭日志输出</div>
+      </div>
+    </div>
+
     <!-- 悬浮图 -->
     <div class="form-section">
       <div class="section-title">🖼️ 悬浮图设置</div>
@@ -212,6 +233,11 @@ function removePath(list: string[], index: number) {
   background: var(--color-bg); box-sizing: border-box; transition: border-color 0.15s;
 }
 .form-input:focus { border-color: var(--color-primary); }
+.form-select {
+  width: 100%; padding: 10px 12px; border: 1.5px solid var(--color-border);
+  border-radius: var(--radius-sm); font-size: 13px; color: var(--color-text);
+  background: var(--color-bg); box-sizing: border-box; cursor: pointer;
+}
 .form-row { display: flex; gap: 12px; }
 .form-row .form-group { flex: 1; }
 .input-with-button { display: flex; gap: 8px; }
@@ -267,4 +293,5 @@ function removePath(list: string[], index: number) {
 }
 .radio-thumb { max-width: 100%; max-height: 100%; object-fit: contain; }
 .radio-label { font-size: 12px; font-weight: 500; color: var(--color-text-secondary); }
+
 </style>

@@ -120,7 +120,7 @@ pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
         *seq
     };
     let label = format!("bubble-{}", seq);
-    log::info!(
+    log::debug!(
         "[bubble] create requested: label={} len={} preview={}",
         label,
         content.len(),

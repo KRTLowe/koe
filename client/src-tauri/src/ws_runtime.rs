@@ -4,7 +4,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::AppConfig;
 use crate::notify;
-use crate::overlay::show_tool_call_overlay;
+use crate::overlay::{close_tool_call_overlay, show_tool_call_overlay};
 use crate::ws_client::{self, SignalRequest, UploadRequest, WsEvent};
 use crate::AppState;
 
@@ -123,8 +123,11 @@ pub(crate) fn start_ws_client(
                 }
                 WsEvent::ToolCallCompleted { name, is_error } => {
                     log::info!("[lib] Tool call completed: {} is_error={}", name, is_error);
-                    let status = if *is_error { "error" } else { "done" };
-                    show_tool_call_overlay(&handle, status, name);
+                    if *is_error {
+                        show_tool_call_overlay(&handle, "error", name);
+                    } else {
+                        let _ = close_tool_call_overlay(handle.clone());
+                    }
                 }
             }
         }

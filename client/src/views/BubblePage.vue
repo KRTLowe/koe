@@ -4,7 +4,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { renderMarkdown } from "../lib/markdown";
 
+const THINK_MARKER = "__THINKING__";
+
 const text = ref("");
+const isThinking = ref(false);
 const bubbleRef = ref<HTMLDivElement | null>(null);
 const renderedHtml = computed(() => renderMarkdown(text.value));
 
@@ -24,11 +27,16 @@ onMounted(async () => {
   document.body.style.overflow = "hidden";
   document.body.style.background = "transparent";
 
-  // 取走完整内容（5s 去抖后已经累积完毕）
   const win = getCurrentWindow();
   try {
-    text.value = await invoke<string>("take_bubble_content", { label: win.label });
-    remeasure();
+    const content = await invoke<string>("take_bubble_content", { label: win.label });
+    if (content === THINK_MARKER) {
+      isThinking.value = true;
+      remeasure();
+    } else {
+      text.value = content;
+      remeasure();
+    }
   } catch { /* no content */ }
 });
 </script>
@@ -36,7 +44,11 @@ onMounted(async () => {
 <template>
   <div class="bubble-root">
     <div class="bubble-body">
-      <div ref="bubbleRef" class="bubble-text markdown-body" v-html="renderedHtml"></div>
+      <div v-if="isThinking" ref="bubbleRef" class="bubble-text think-bubble">
+        <span class="think-spinner"></span>
+        <span>卡雅思考中</span>
+      </div>
+      <div v-else ref="bubbleRef" class="bubble-text markdown-body" v-html="renderedHtml"></div>
       <div class="bubble-tail"></div>
     </div>
   </div>
@@ -195,5 +207,27 @@ onMounted(async () => {
   border-left: 8px solid rgba(0, 0, 0, 0.72);
   margin-top: 10px;
   flex-shrink: 0;
+}
+
+.think-bubble {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #f1f5f9;
+}
+
+.think-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #93c5fd;
+  border-radius: 50%;
+  animation: think-spin 0.8s linear infinite;
+}
+
+@keyframes think-spin {
+  to { transform: rotate(360deg); }
 }
 </style>

@@ -37,7 +37,7 @@ pub(crate) fn toggle_copilot_window(app: &AppHandle, mode: &str) {
         (400.0, 200.0)
     };
 
-    let _ = WebviewWindowBuilder::new(
+    if let Ok(window) = WebviewWindowBuilder::new(
         app,
         "copilot-overlay",
         WebviewUrl::App(format!("copilot?mode={}", mode).into()),
@@ -48,7 +48,10 @@ pub(crate) fn toggle_copilot_window(app: &AppHandle, mode: &str) {
     .skip_taskbar(true)
     .inner_size(560.0, 110.0)
     .position(x, y)
-    .build();
+    .build()
+    {
+        let _ = window.set_focus();
+    }
 }
 
 #[tauri::command]

@@ -8,9 +8,17 @@ use serde_json::Value;
 use super::{Tool, ToolResult};
 use crate::config::AppConfig;
 
-// ── 模型路径 ────────────────────────────────────────
+// ── 模型配置 ────────────────────────────────────────
+
+const MODEL_TIER: &str = "PP-OCRv6_medium";
 
 const MODEL_BASE: &str = "models/PaddleOCR";
+const DET_SUBDIR: &str = "PP-OCRv6_medium_det";
+const REC_SUBDIR: &str = "PP-OCRv6_medium_rec";
+
+// Hugging Face 模型仓库
+const HF_DET_REPO: &str = "PaddlePaddle/PP-OCRv6_medium_det_onnx";
+const HF_REC_REPO: &str = "PaddlePaddle/PP-OCRv6_medium_rec_onnx";
 
 fn models_dir() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
@@ -18,25 +26,100 @@ fn models_dir() -> PathBuf {
     exe_dir.join(MODEL_BASE)
 }
 
-fn det_path() -> PathBuf {
-    models_dir().join("ch_PP-OCRv5_mobile_det.onnx")
+fn det_model_path() -> PathBuf {
+    models_dir().join(DET_SUBDIR).join("inference.onnx")
 }
-fn cls_path() -> PathBuf {
-    models_dir().join("ch_ppocr_mobile_v2.0_cls_infer.onnx")
+fn det_yml_path() -> PathBuf {
+    models_dir().join(DET_SUBDIR).join("inference.yml")
 }
-fn rec_path() -> PathBuf {
-    models_dir().join("ch_PP-OCRv5_rec_mobile_infer.onnx")
+fn rec_model_path() -> PathBuf {
+    models_dir().join(REC_SUBDIR).join("inference.onnx")
 }
-fn keys_path() -> PathBuf {
-    models_dir().join("ppocr_keys_v1.txt")
+fn rec_yml_path() -> PathBuf {
+    models_dir().join(REC_SUBDIR).join("inference.yml")
+}
+
+// ── 字符字典解析（从 inference.yml） ────────────────
+//
+// inference.yml 中的 character_dict 是 YAML 缩进列表：
+//   character_dict:
+//   - '!'
+//   - '"'
+//   ...
+// 我们解析 '...' 之间的内容，索引 0 保留给 CTC blank。
+
+fn parse_char_dict(yml_path: &Path) -> Result<Vec<String>, String> {
+    use std::collections::HashMap;
+
+    let content =
+        std::fs::read_to_string(yml_path).map_err(|e| format!("读取 {} 失败: {}", yml_path.display(), e))?;
+
+    // 用 serde_yaml 完整解析 inference.yml
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(&content).map_err(|e| format!("解析 {} 失败: {}", yml_path.display(), e))?;
+
+    let raw = value
+        .get("PostProcess")
+        .and_then(|p| p.get("character_dict"))
+        .and_then(|d| d.as_sequence())
+        .ok_or_else(|| format!("{} 中未找到 PostProcess.character_dict", yml_path.display()))?;
+
+    // 索引 0 = CTC blank
+    let mut keys: Vec<String> = vec![String::new()];
+    for v in raw {
+        if let Some(s) = v.as_str() {
+            keys.push(s.to_string());
+        } else {
+            keys.push(String::new());
+        }
+    }
+
+    // PP-OCRv6_medium_rec ONNX 输出 18710 类，补齐防止越界
+    keys.resize(18710, String::new());
+
+    log::info!(
+        "[PaddleOCR] loaded {} character entries from {}",
+        keys.len() - 1,
+        yml_path.display()
+    );
+    Ok(keys)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_char_dict_count() {
+        let yml = r#"PostProcess:
+  name: CTCLabelDecode
+  character_dict:
+  - '!'
+  - '"'
+  - '#'
+"#;
+        let dir = std::env::temp_dir().join("ocr_test_parse");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.yml");
+        std::fs::write(&path, yml).unwrap();
+        let keys = parse_char_dict(&path).unwrap();
+        // blank at 0 + 3 chars
+        assert_eq!(keys.len(), 18710, "should pad to 18710");
+        assert_eq!(keys[1], "!");
+        assert_eq!(keys[2], "\"");
+        assert_eq!(keys[3], "#");
+        // padding entries are empty
+        for i in 4..keys.len() {
+            assert_eq!(keys[i], "", "index {} should be empty padding", i);
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
 }
 
 // ── ONNX 引擎（Mutex 保护懒初始化） ─────────────────
 
 struct OcrEngine {
     det: ort::session::Session,
-    #[allow(dead_code)]
-    cls: ort::session::Session,
     rec: ort::session::Session,
     keys: Vec<String>,
 }
@@ -56,18 +139,11 @@ fn init_engine() -> Result<(), String> {
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(&keys_path())
-        .map_err(|e| format!("读取 {} 失败: {}", keys_path().display(), e))?;
-    let mut keys: Vec<String> =
-        content.lines().map(|l| l.trim().to_string()).collect();
-    if keys.is_empty() || !keys[0].is_empty() {
-        keys.insert(0, String::new());
-    }
+    let keys = parse_char_dict(&rec_yml_path())?;
 
     *guard = Some(OcrEngine {
-        det: load_session(&det_path())?,
-        cls: load_session(&cls_path())?,
-        rec: load_session(&rec_path())?,
+        det: load_session(&det_model_path())?,
+        rec: load_session(&rec_model_path())?,
         keys,
     });
 
@@ -87,50 +163,102 @@ where
 
 // ── 模型下载 ────────────────────────────────────────
 
-fn download_models() -> Result<(), String> {
-    let dir = models_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("创建模型目录失败: {}", e))?;
-
-    let files = [
-        ("ch_PP-OCRv5_mobile_det.onnx",
-         "https://github.com/PaddlePaddle/PaddleOCR/releases/download/v3.0/ch_PP-OCRv5_mobile_det_infer.onnx"),
-        ("ch_ppocr_mobile_v2.0_cls_infer.onnx",
-         "https://github.com/PaddlePaddle/PaddleOCR/releases/download/v3.0/ch_ppocr_mobile_v2.0_cls_infer.onnx"),
-        ("ch_PP-OCRv5_rec_mobile_infer.onnx",
-         "https://github.com/PaddlePaddle/PaddleOCR/releases/download/v3.0/ch_PP-OCRv5_mobile_rec_infer.onnx"),
-        ("ppocr_keys_v1.txt",
-         "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt"),
-    ];
-
-    for (name, url) in &files {
-        let path = dir.join(name);
-        if path.exists() {
-            continue;
+/// 读取系统代理：优先环境变量（HTTPS_PROXY/HTTP_PROXY），
+/// 再尝试 netsh winhttp 获取 Windows 系统代理。
+fn system_proxy() -> Option<String> {
+    // 1. 环境变量（覆盖 VPN/Clash/v2rayN 等手动配置）
+    for var in &["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+        if let Ok(val) = std::env::var(var) {
+            let val = val.trim().to_string();
+            if !val.is_empty() {
+                return Some(val);
+            }
         }
-        log::info!("[PaddleOCR] downloading {} ...", name);
-        let resp = ureq::get(*url)
-            .call()
-            .map_err(|e| format!("下载 {} 失败: {}", name, e))?;
-        let mut bytes: Vec<u8> = Vec::new();
-        resp.into_body()
-            .into_reader()
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("读取 {} 失败: {}", name, e))?;
-        std::fs::write(&path, &bytes)
-            .map_err(|e| format!("保存 {} 失败: {}", name, e))?;
-        log::info!("[PaddleOCR] downloaded {} ({} bytes)", name, bytes.len());
     }
+
+    // 2. Windows 系统代理（通过 netsh winhttp 查询）
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        if let Ok(output) = Command::new("netsh")
+            .args(["winhttp", "show", "proxy"])
+            .output()
+        {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                // 输出格式: "当前的 WinHTTP 代理服务器:  http://proxy:8080"
+                for line in text.lines() {
+                    if line.contains("代理服务器") || line.contains("Proxy Server") {
+                        if let Some(pos) = line.find(':') {
+                            let proxy = line[pos + 1..].trim().to_string();
+                            if !proxy.is_empty() && proxy != "直接连接" && proxy != "Direct" {
+                                return Some(proxy);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// 从 Hugging Face 下载文件，跳过已存在的。支持系统代理。
+fn hf_download(repo: &str, filename: &str, dest: &Path) -> Result<(), String> {
+    if dest.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dest.parent().unwrap())
+        .map_err(|e| format!("创建目录 {} 失败: {}", dest.parent().unwrap().display(), e))?;
+
+    let url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
+    log::info!("[PaddleOCR] downloading {} ...", url);
+
+    let resp = if let Some(proxy_url) = system_proxy() {
+        log::info!("[PaddleOCR] using proxy: {}", proxy_url);
+        let proxy = ureq::Proxy::new(&proxy_url)
+            .map_err(|e| format!("代理配置失败 ({}): {}", proxy_url, e))?;
+        ureq::config::Config::builder()
+            .proxy(Some(proxy))
+            .build()
+            .new_agent()
+            .get(&url)
+            .call()
+            .map_err(|e| format!("下载 {} 失败 (通过代理 {}): {}", filename, proxy_url, e))?
+    } else {
+        ureq::get(&url)
+            .call()
+            .map_err(|e| format!("下载 {} 失败: {}", filename, e))?
+    };
+
+    let mut bytes: Vec<u8> = Vec::new();
+    resp.into_body()
+        .into_reader()
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("读取 {} 失败: {}", filename, e))?;
+    std::fs::write(dest, &bytes)
+        .map_err(|e| format!("保存 {} 失败: {}", dest.display(), e))?;
+    log::info!("[PaddleOCR] downloaded {} ({} bytes)", filename, bytes.len());
+    Ok(())
+}
+
+fn download_models() -> Result<(), String> {
+    // 检测模型
+    hf_download(HF_DET_REPO, "inference.onnx", &det_model_path())?;
+    hf_download(HF_DET_REPO, "inference.yml", &det_yml_path())?;
+    // 识别模型
+    hf_download(HF_REC_REPO, "inference.onnx", &rec_model_path())?;
+    hf_download(HF_REC_REPO, "inference.yml", &rec_yml_path())?;
     Ok(())
 }
 
 fn auto_download_or_guide() -> Result<(), String> {
-    let det = det_path();
-    let cls = cls_path();
-    let rec = rec_path();
-    let keys = keys_path();
+    let det = det_model_path();
+    let rec = rec_model_path();
+    let rec_yml = rec_yml_path();
 
-    if det.exists() && cls.exists() && rec.exists() && keys.exists() {
+    if det.exists() && rec.exists() && rec_yml.exists() {
         return Ok(());
     }
 
@@ -138,45 +266,49 @@ fn auto_download_or_guide() -> Result<(), String> {
     if let Err(e) = download_models() {
         log::warn!("[PaddleOCR] auto-download failed: {}", e);
         return Err(format!(
-            "模型自动下载失败。请手动下载模型文件到:\n  {}\n\n\
-             需要的文件:\n  - ch_PP-OCRv5_mobile_det.onnx\n  \
-             - ch_ppocr_mobile_v2.0_cls_infer.onnx\n  \
-             - ch_PP-OCRv5_rec_mobile_infer.onnx\n  \
-             - ppocr_keys_v1.txt\n\n\
-             PaddleOCR: https://github.com/PaddlePaddle/PaddleOCR/releases\n\
-             keys: https://github.com/PaddlePaddle/PaddleOCR/blob/main/ppocr/utils/ppocr_keys_v1.txt",
-            models_dir().display()
+            "模型自动下载失败。请手动下载以下文件:\n  - {det}\n  - {det_yml}\n  - {rec}\n  - {rec_yml}\n\n\
+             下载源:\n  https://huggingface.co/{HF_DET_REPO}\n  https://huggingface.co/{HF_REC_REPO}",
+            det = det.display(),
+            det_yml = det_yml_path().display(),
+            rec = rec.display(),
+            rec_yml = rec_yml_path().display(),
         ));
     }
     Ok(())
 }
 
-// ── 检测预处理 ──────────────────────────────────────
+// ── 检测预处理（PP-OCRv6: NCHW 通道优先布局） ────────
 
-fn preprocess_det(img: &image::DynamicImage, max_side: u32)
-    -> Result<(Vec<f32>, Vec<i64>), String>
-{
+fn preprocess_det(img: &image::DynamicImage, max_side: u32) -> Result<(Vec<f32>, Vec<i64>), String> {
     let (w, h) = (img.width(), img.height());
-    let scale = (max_side as f64) / (w.max(h) as f64).min(1.0);
+    let scale = ((max_side as f64) / (w.max(h) as f64)).min(1.0);
     let new_w = ((w as f64 * scale).round() as u32).max(32);
     let new_h = ((h as f64 * scale).round() as u32).max(32);
     let rw = ((new_w + 31) / 32) * 32;
     let rh = ((new_h + 31) / 32) * 32;
 
     let resized = img.resize_exact(rw, rh, image::imageops::FilterType::Lanczos3);
+    // PP-OCRv6 使用 BGR 通道顺序，而 image::RgbImage 是 RGB，需要交换
     let rgb = resized.to_rgb8();
 
-    let mut data = Vec::with_capacity((3 * rw * rh) as usize);
-    for pixel in rgb.pixels() {
-        data.push((pixel[0] as f32 / 255.0 - 0.485) / 0.229);
-        data.push((pixel[1] as f32 / 255.0 - 0.456) / 0.224);
-        data.push((pixel[2] as f32 / 255.0 - 0.406) / 0.225);
+    // NCHW 布局 + BGR 顺序: [B..., G..., R...]
+    // mean=[0.485,0.456,0.406] std=[0.229,0.224,0.225] 对应 B/G/R
+    let total = (rw * rh) as usize;
+    let mut data = vec![0.0f32; 3 * total];
+    for y in 0..rh {
+        for x in 0..rw {
+            let pixel = rgb.get_pixel(x, y);
+            let idx = (y * rw + x) as usize;
+            data[idx] = (pixel[2] as f32 / 255.0 - 0.485) / 0.229;       // B
+            data[total + idx] = (pixel[1] as f32 / 255.0 - 0.456) / 0.224; // G
+            data[2 * total + idx] = (pixel[0] as f32 / 255.0 - 0.406) / 0.225; // R
+        }
     }
 
     Ok((data, vec![1, 3, rh as i64, rw as i64]))
 }
 
-// ── 检测后处理 ──────────────────────────────────────
+// ── 检测后处理（同 PP-OCRv5） ────────────────────────
 
 fn dbnet_postprocess(
     output: &[f32],
@@ -197,27 +329,38 @@ fn dbnet_postprocess(
     let mut visited = vec![false; h * w];
     let mut boxes: Vec<[i32; 4]> = Vec::new();
 
-    for y in 0..h {
+        for y in 0..h {
         for x in 0..w {
             let idx = y * w + x;
-            if visited[idx] { continue; }
-            let p = 1.0 / (1.0 + (-output[idx]).exp());
-            if p < threshold { visited[idx] = true; continue; }
+            if visited[idx] {
+                continue;
+            }
+            // ONNX 模型输出已含 sigmoid，output[idx] 即为概率
+            if output[idx] < threshold {
+                visited[idx] = true;
+                continue;
+            }
 
             let (mut x1, mut x2, mut y1, mut y2) = (x, x, y, y);
             let mut q = vec![(x, y)];
             visited[idx] = true;
 
             while let Some((cx, cy)) = q.pop() {
-                x1 = x1.min(cx); x2 = x2.max(cx);
-                y1 = y1.min(cy); y2 = y2.max(cy);
-                for &(dx, dy) in &[(0i32,-1),(0,1),(-1,0),(1,0)] {
+                x1 = x1.min(cx);
+                x2 = x2.max(cx);
+                y1 = y1.min(cy);
+                y2 = y2.max(cy);
+                for &(dx, dy) in &[(0i32, -1), (0, 1), (-1, 0), (1, 0)] {
                     let nx = cx as i32 + dx;
                     let ny = cy as i32 + dy;
-                    if nx < 0 || nx >= w as i32 || ny < 0 || ny >= h as i32 { continue; }
+                    if nx < 0 || nx >= w as i32 || ny < 0 || ny >= h as i32 {
+                        continue;
+                    }
                     let ni = ny as usize * w + nx as usize;
-                    if visited[ni] { continue; }
-                    if 1.0 / (1.0 + (-output[ni]).exp()) >= threshold {
+                    if visited[ni] {
+                        continue;
+                    }
+                    if output[ni] >= threshold {
                         visited[ni] = true;
                         q.push((nx as usize, ny as usize));
                     }
@@ -237,7 +380,7 @@ fn dbnet_postprocess(
     }
 
     boxes.sort_by(|a, b| {
-        ((b[2]-b[0])*(b[3]-b[1])).cmp(&((a[2]-a[0])*(a[3]-a[1])))
+        ((b[2] - b[0]) * (b[3] - b[1])).cmp(&((a[2] - a[0]) * (a[3] - a[1])))
     });
 
     let mut keep: Vec<[i32; 4]> = Vec::new();
@@ -249,48 +392,83 @@ fn dbnet_postprocess(
             let iw = (b[2].min(kb[2]) - ix).max(0);
             let ih = (b[3].min(kb[3]) - iy).max(0);
             let inter = (iw * ih) as f64;
-            let area_b = ((b[2]-b[0])*(b[3]-b[1])) as f64;
-            let area_kb = ((kb[2]-kb[0])*(kb[3]-kb[1])) as f64;
+            let area_b = ((b[2] - b[0]) * (b[3] - b[1])) as f64;
+            let area_kb = ((kb[2] - kb[0]) * (kb[3] - kb[1])) as f64;
             let union = area_b + area_kb - inter;
-            if union > 0.0 && inter / union > 0.5 { sup = true; break; }
+            if union > 0.0 && inter / union > 0.5 {
+                sup = true;
+                break;
+            }
         }
-        if !sup { keep.push(b); }
+        if !sup {
+            keep.push(b);
+        }
     }
     keep
 }
 
-// ── 识别预处理 ──────────────────────────────────────
+// ── 识别预处理（PP-OCRv6: H=48, 3ch, [-1,1]） ──────
+
+const REC_H: u32 = 48;
+const REC_MAX_W: u32 = 320;
 
 fn preprocess_rec(img: &image::DynamicImage, box_: &[i32; 4]) -> Option<(Vec<f32>, Vec<i64>)> {
     let x = box_[0].max(0) as u32;
     let y = box_[1].max(0) as u32;
     let cw = (box_[2] - box_[0]).unsigned_abs().min(img.width() - x);
     let ch = (box_[3] - box_[1]).unsigned_abs().min(img.height() - y);
-    if cw < 2 || ch < 2 { return None; }
+    if cw < 2 || ch < 2 {
+        return None;
+    }
 
     let cropped = img.crop_imm(x, y, cw.max(4), ch);
-    let gray = cropped.to_luma8();
-    let target_h = 32u32;
-    let scale = target_h as f64 / gray.height() as f64;
-    let target_w = ((gray.width() as f64 * scale).round() as u32).max(4).min(320);
-    let resized = image::imageops::resize(
-        &gray, target_w, target_h, image::imageops::FilterType::Triangle,
-    );
 
-    let mut data = Vec::with_capacity((target_w * target_h) as usize);
-    for p in resized.pixels() {
-        data.push(p[0] as f32 / 255.0);
+    // PP-OCRv6 rec: 3-channel, H=48, aspect-ratio W (max REC_MAX_W)
+    // Normalize: (value/255 - 0.5)/0.5 = value/127.5 - 1.0 → [-1, 1]
+    // Layout: NCHW (channel-first), padding to REC_MAX_W with zeros
+    let scale = REC_H as f64 / cropped.height() as f64;
+    let target_w = ((cropped.width() as f64 * scale).round() as u32)
+        .max(4)
+        .min(REC_MAX_W);
+
+    let resized = cropped.resize_exact(
+        target_w,
+        REC_H,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let rgb = resized.to_rgb8();
+
+    // 预分配 NCHW 缓冲区，默认全零（padding 区域自动为零）
+    let mut data = vec![0.0f32; (3 * REC_H * REC_MAX_W) as usize];
+
+    for y in 0..REC_H {
+        for x in 0..target_w {
+            let pixel = rgb.get_pixel(x, y);
+            // BGR 顺序: channel 0=B, 1=G, 2=R
+            let b_norm = pixel[2] as f32 / 127.5 - 1.0;
+            let g_norm = pixel[1] as f32 / 127.5 - 1.0;
+            let r_norm = pixel[0] as f32 / 127.5 - 1.0;
+
+            let idx_b = (0 * REC_H + y) * REC_MAX_W + x;
+            let idx_g = (1 * REC_H + y) * REC_MAX_W + x;
+            let idx_r = (2 * REC_H + y) * REC_MAX_W + x;
+            data[idx_b as usize] = b_norm;
+            data[idx_g as usize] = g_norm;
+            data[idx_r as usize] = r_norm;
+        }
     }
-    Some((data, vec![1, 1, 32, target_w as i64]))
+
+    Some((data, vec![1, 3, REC_H as i64, REC_MAX_W as i64]))
 }
 
 // ── CTC 解码 ────────────────────────────────────────
 
 fn ctc_decode(output: &[f32], shape: &[usize], keys: &[String]) -> String {
-    let (classes, timesteps) = if shape.len() == 3 && shape[0] == 1 {
+    // 模型输出 shape 为 [1, T, C]（batch=1, timesteps=T, classes=C=18710）
+    let (timesteps, classes) = if shape.len() == 3 && shape[0] == 1 {
         (shape[1], shape[2])
     } else if shape.len() == 3 && shape[2] == 1 {
-        (shape[1], shape[0])
+        (shape[0], shape[1])
     } else {
         return String::new();
     };
@@ -304,11 +482,16 @@ fn ctc_decode(output: &[f32], shape: &[usize], keys: &[String]) -> String {
         let mut max_v = -1e10f32;
         for c in 0..classes {
             let v = output[base + c];
-            if v > max_v { max_v = v; max_idx = c; }
+            if v > max_v {
+                max_v = v;
+                max_idx = c;
+            }
         }
         if max_idx != 0 && max_idx != prev {
             if let Some(s) = keys.get(max_idx) {
-                if !s.is_empty() { result.push(s.clone()); }
+                if !s.is_empty() {
+                    result.push(s.clone());
+                }
             }
         }
         prev = max_idx;
@@ -329,7 +512,9 @@ struct OcrWord {
     confidence: f64,
 }
 
-fn is_zero(f: &f64) -> bool { f64::abs(*f) < f64::EPSILON }
+fn is_zero(f: &f64) -> bool {
+    f64::abs(*f) < f64::EPSILON
+}
 
 // ── Tool ────────────────────────────────────────────
 
@@ -350,10 +535,12 @@ impl OcrTool {
 }
 
 impl Tool for OcrTool {
-    fn name(&self) -> &'static str { "ocr_region" }
+    fn name(&self) -> &'static str {
+        "ocr_region"
+    }
     fn description(&self) -> &'static str {
-        "OCR recognize text from an image file using PaddleOCR (ONNX). \
-         Auto-downloads models on first use. Returns words with bounding boxes."
+        "OCR recognize text from an image file using PP-OCRv6 (ONNX). \
+         Auto-downloads medium models on first use. Returns words with bounding boxes."
     }
     fn input_schema(&self) -> Value {
         serde_json::json!({
@@ -365,36 +552,48 @@ impl Tool for OcrTool {
             "required": ["path"]
         })
     }
-    fn is_enabled(&self) -> bool { self.enabled }
-    fn set_enabled(&mut self, enabled: bool) { self.enabled = enabled; }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
 
     fn execute(&self, args: &Value) -> ToolResult {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-        if path.is_empty() { return ToolResult::err("path is required".to_string()); }
+        if path.is_empty() {
+            return ToolResult::err("path is required".to_string());
+        }
 
-        if let Err(e) = auto_download_or_guide() { return ToolResult::err(e); }
-        if let Err(e) = init_engine() { return ToolResult::err(e); }
+        if let Err(e) = auto_download_or_guide() {
+            return ToolResult::err(e);
+        }
+        if let Err(e) = init_engine() {
+            return ToolResult::err(e);
+        }
 
         let img = match image::open(path) {
             Ok(img) => img,
             Err(e) => return ToolResult::err(format!("读取图片失败: {}", e)),
         };
 
-        // 检测
+        // ── 检测 ──
         let (det_data, det_shape) = match preprocess_det(&img, 1024) {
             Ok(v) => v,
             Err(e) => return ToolResult::err(e),
         };
 
         let boxes = match with_engine_mut(|eng| {
-            let input = ort::value::Tensor::from_array(
-                (det_shape.clone(), det_data.clone()),
-            ).map_err(|e| format!("构建检测输入: {}", e))?;
+            let input = ort::value::Tensor::from_array((det_shape.clone(), det_data.clone()))
+                .map_err(|e| format!("构建检测输入: {}", e))?;
 
-            let out = eng.det.run(ort::inputs![input])
+            let out = eng
+                .det
+                .run(ort::inputs![input])
                 .map_err(|e| format!("检测推理: {}", e))?;
 
-            let (out_shape, out_data) = out[0].try_extract_tensor::<f32>()
+            let (out_shape, out_data) = out[0]
+                .try_extract_tensor::<f32>()
                 .map_err(|e| format!("读检测输出: {}", e))?;
             let shape: Vec<usize> = out_shape.iter().map(|&d| d as usize).collect();
             let data: Vec<f32> = out_data.to_vec();
@@ -405,7 +604,7 @@ impl Tool for OcrTool {
             Err(e) => return ToolResult::err(e),
         };
 
-        // 识别
+        // ── 识别 ──
         let (words, full_text) = match with_engine_mut(|eng| {
             let mut words: Vec<OcrWord> = Vec::new();
             let mut text = String::new();
@@ -416,34 +615,49 @@ impl Tool for OcrTool {
                     None => continue,
                 };
 
-                let input = ort::value::Tensor::from_array(
-                    (rec_shape.clone(), rec_data.clone()),
-                ).map_err(|e| format!("构建识别输入: {}", e))?;
+                let input = ort::value::Tensor::from_array((rec_shape.clone(), rec_data.clone()))
+                    .map_err(|e| format!("构建识别输入: {}", e))?;
 
-                let out = eng.rec.run(ort::inputs![input])
+                let out = eng
+                    .rec
+                    .run(ort::inputs![input])
                     .map_err(|e| format!("识别推理: {}", e))?;
 
-                let (out_shape, out_data) = out[0].try_extract_tensor::<f32>()
+                let (out_shape, out_data) = out[0]
+                    .try_extract_tensor::<f32>()
                     .map_err(|e| format!("读识别输出: {}", e))?;
                 let shape: Vec<usize> = out_shape.iter().map(|&d| d as usize).collect();
                 let data: Vec<f32> = out_data.to_vec();
 
                 let txt = ctc_decode(&data, &shape, &eng.keys);
-                if txt.is_empty() { continue; }
+                if txt.is_empty() {
+                    continue;
+                }
 
-                if !text.is_empty() { text.push('\n'); }
+                if !text.is_empty() {
+                    text.push('\n');
+                }
                 text.push_str(&txt);
 
                 words.push(OcrWord {
                     text: txt,
-                    x: b[0], y: b[1],
-                    w: b[2] - b[0], h: b[3] - b[1],
+                    x: b[0],
+                    y: b[1],
+                    w: b[2] - b[0],
+                    h: b[3] - b[1],
                     confidence: 0.0,
                 });
             }
 
-            log::info!("[PaddleOCR] {} words, preview={:?}", words.len(),
-                if text.len() > 80 { &text[..80] } else { &text });
+            log::info!(
+                "[PaddleOCR] {} words, preview={:?}",
+                words.len(),
+                if text.len() > 80 {
+                    &text[..80]
+                } else {
+                    &text
+                }
+            );
             Ok((words, text))
         }) {
             Ok(v) => v,
@@ -451,7 +665,8 @@ impl Tool for OcrTool {
         };
 
         match serde_json::to_string(&serde_json::json!({
-            "engine": "paddle_ocr",
+            "engine": "ppocr_v6",
+            "tier": MODEL_TIER,
             "text": full_text,
             "words": words,
         })) {
