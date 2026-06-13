@@ -185,20 +185,27 @@ fn exec_key_combo(combo: &str) -> Result<(), String> {
 fn bring_window_to_foreground(hwnd: isize) {
     unsafe {
         if win32::GetForegroundWindow() == hwnd {
-            win32::SetFocus(hwnd);
             return;
         }
+        log::info!("[Focus] bringing window hwnd=0x{:x} to foreground", hwnd);
         // 最小化窗口先还原
         if win32::IsIconic(hwnd) != 0 {
             win32::ShowWindow(hwnd, 9); // SW_RESTORE = 9
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(100));
         }
         // Alt 键模拟绕过 UIPI，使 SetForegroundWindow 生效
         win32::keybd_event(win32::VK_MENU, 0, 0, 0);
         std::thread::sleep(Duration::from_millis(10));
         win32::keybd_event(win32::VK_MENU, 0, win32::KEYEVENTF_KEYUP, 0);
         win32::SetForegroundWindow(hwnd);
-        win32::SetFocus(hwnd);
+        std::thread::sleep(Duration::from_millis(100));
+        // 等确认焦点到位
+        for _ in 0..5 {
+            if win32::GetForegroundWindow() == hwnd {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 }
 
@@ -264,19 +271,14 @@ impl Tool for TypeTextTool {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            // 可选：激活目标窗口
             if let Some(hwnd) = args.get("hwnd").and_then(|v| v.as_i64()) {
-                log::debug!("[TypeText] activating window hwnd=0x{:x}", hwnd);
+                log::info!("[TypeText] activating window hwnd=0x{:x}", hwnd);
                 bring_window_to_foreground(hwnd as isize);
-                std::thread::sleep(Duration::from_millis(30));
-                log::debug!("[TypeText] window activated");
+                std::thread::sleep(Duration::from_millis(50));
+                log::info!("[TypeText] window activated, starting typing");
             }
 
             log::info!("[TypeText] typing {} chars, end_with_enter={}", text.len(), end_with_enter);
-                "[TypeText] typing {} chars, end_with_enter={}",
-                text.len(),
-                end_with_enter
-            );
 
             let all_ascii = text.chars().all(|c| {
                 c.is_ascii()
@@ -387,9 +389,9 @@ impl Tool for KeyPressTool {
                 return ToolResult::err("keys is required".to_string());
             }
             if let Some(hwnd) = args.get("hwnd").and_then(|v| v.as_i64()) {
-                log::debug!("[KeyPress] activating window hwnd=0x{:x}", hwnd);
+                log::info!("[KeyPress] activating window hwnd=0x{:x}", hwnd);
                 bring_window_to_foreground(hwnd as isize);
-                std::thread::sleep(Duration::from_millis(30));
+                std::thread::sleep(Duration::from_millis(50));
             }
             log::info!("[KeyPress] {}", keys);
             match exec_key_combo(keys) {
@@ -463,18 +465,12 @@ impl Tool for MouseClickTool {
             let clicks = args.get("clicks").and_then(|v| v.as_u64()).unwrap_or(1);
 
             if let Some(hwnd) = args.get("hwnd").and_then(|v| v.as_i64()) {
-                log::debug!("[MouseClick] activating window hwnd=0x{:x}", hwnd);
+                log::info!("[MouseClick] activating window hwnd=0x{:x}", hwnd);
                 bring_window_to_foreground(hwnd as isize);
-                std::thread::sleep(Duration::from_millis(30));
+                std::thread::sleep(Duration::from_millis(50));
             }
 
             log::info!("[MouseClick] x={} y={} button={} clicks={}", x, y, button, clicks);
-                "[MouseClick] x={} y={} button={} clicks={}",
-                x,
-                y,
-                button,
-                clicks
-            );
 
             unsafe {
                 win32::SetCursorPos(x, y);
