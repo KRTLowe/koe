@@ -111,6 +111,8 @@ pub(crate) fn resize_bubble(
     Ok(())
 }
 
+const MAX_BUBBLES: usize = 10;
+
 pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
     let state = app.state::<AppState>();
 
@@ -132,10 +134,23 @@ pub(crate) fn create_message_bubble(app: &AppHandle, content: &str) -> String {
         .unwrap()
         .insert(label.clone(), content.to_string());
 
-    state.active_bubbles.lock().unwrap().push(BubbleInfo {
-        label: label.clone(),
-        height: 40.0,
-    });
+    // 限流：超出 MAX_BUBBLES 时移除最旧的气泡
+    {
+        let mut bubbles = state.active_bubbles.lock().unwrap();
+        bubbles.push(BubbleInfo {
+            label: label.clone(),
+            height: 40.0,
+        });
+        while bubbles.len() > MAX_BUBBLES {
+            if let Some(old) = bubbles.first().cloned() {
+                drop(bubbles);
+                close_bubble_by_label(app, &old.label);
+                bubbles = state.active_bubbles.lock().unwrap();
+            } else {
+                break;
+            }
+        }
+    }
     *state.last_msg_time.lock().unwrap() = Some(Instant::now());
 
     let _ = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("bubble".into()))
