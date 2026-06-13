@@ -368,7 +368,13 @@ pub async fn run_client(
                 }
                 Some((request_id, tool_name, result)) = tool_done_rx.recv() => {
                     if result.is_error {
-                        log::info!("[WSClient] >>> sending error tool_result for request_id={}", request_id);
+                        let content_text: String = result.content.iter()
+                            .filter_map(|c| c.get("text").and_then(|t| t.as_str()))
+                            .collect::<Vec<_>>()
+                            .join(" | ");
+                        log::info!("[WSClient] >>> sending error tool_result for request_id={}: {}",
+                            request_id, content_text);
+                        log::debug!("[WSClient] >>> error tool_result full content: {:?}", result.content);
                         let response = serde_json::json!({
                             "type": "tool_result",
                             "request_id": &request_id,
@@ -659,8 +665,8 @@ pub async fn run_client(
                                     ClientboundMessage::CallTool { request_id, name, arguments } => {
                                         let tool_name = name;
                                         let args = arguments;
-                                        log::info!("[WSClient] <<< call_tool: request_id={} tool={} args={}",
-                                            request_id, tool_name, args);
+                                        log::info!("[WSClient] <<< call_tool: request_id={} tool={}", request_id, tool_name);
+                                        log::debug!("[WSClient] <<< call_tool args: {}", args);
 
                                         let _ = event_tx.send(WsEvent::ToolCallStarted {
                                             name: tool_name.clone(),

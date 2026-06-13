@@ -35,7 +35,8 @@ impl ToolResult {
 }
 
 pub fn execute_tool(name: &str, args: &Value) -> ToolResult {
-    log::info!("[ToolExecutor] execute_tool: name={} args={}", name, args);
+    log::info!("[ToolExecutor] execute_tool: name={}", name);
+    log::debug!("[ToolExecutor] args: {}", args);
     if let Some(app) = crate::APP_HANDLE.get() {
         if let Some(state) = app.try_state::<crate::AppState>() {
             if let Ok(mgr) = state.tool_manager.lock() {

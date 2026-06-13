@@ -266,11 +266,13 @@ impl Tool for TypeTextTool {
 
             // 可选：激活目标窗口
             if let Some(hwnd) = args.get("hwnd").and_then(|v| v.as_i64()) {
+                log::debug!("[TypeText] activating window hwnd=0x{:x}", hwnd);
                 bring_window_to_foreground(hwnd as isize);
                 std::thread::sleep(Duration::from_millis(30));
+                log::debug!("[TypeText] window activated");
             }
 
-            log::info!(
+            log::info!("[TypeText] typing {} chars, end_with_enter={}", text.len(), end_with_enter);
                 "[TypeText] typing {} chars, end_with_enter={}",
                 text.len(),
                 end_with_enter
@@ -385,6 +387,7 @@ impl Tool for KeyPressTool {
                 return ToolResult::err("keys is required".to_string());
             }
             if let Some(hwnd) = args.get("hwnd").and_then(|v| v.as_i64()) {
+                log::debug!("[KeyPress] activating window hwnd=0x{:x}", hwnd);
                 bring_window_to_foreground(hwnd as isize);
                 std::thread::sleep(Duration::from_millis(30));
             }
@@ -460,11 +463,12 @@ impl Tool for MouseClickTool {
             let clicks = args.get("clicks").and_then(|v| v.as_u64()).unwrap_or(1);
 
             if let Some(hwnd) = args.get("hwnd").and_then(|v| v.as_i64()) {
+                log::debug!("[MouseClick] activating window hwnd=0x{:x}", hwnd);
                 bring_window_to_foreground(hwnd as isize);
                 std::thread::sleep(Duration::from_millis(30));
             }
 
-            log::info!(
+            log::info!("[MouseClick] x={} y={} button={} clicks={}", x, y, button, clicks);
                 "[MouseClick] x={} y={} button={} clicks={}",
                 x,
                 y,

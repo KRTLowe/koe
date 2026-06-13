@@ -110,18 +110,10 @@ impl ToolManager {
 
     /// 按名称执行工具
     pub fn execute(&self, name: &str, args: &Value) -> Option<ToolResult> {
-        log::info!(
-            "[ToolManager] execute: name={}, args={}, total_tools={}",
-            name,
-            args,
-            self.tools.len()
-        );
+        log::info!("[ToolManager] execute: name={}, total_tools={}", name, self.tools.len());
+        log::debug!("[ToolManager] execute args: {}", args);
         for tool in &self.tools {
-            log::info!(
-                "[ToolManager]   check tool={}, enabled={}",
-                tool.name(),
-                tool.is_enabled()
-            );
+            log::debug!("[ToolManager]   check tool={}, enabled={}", tool.name(), tool.is_enabled());
             if tool.name() == name && tool.is_enabled() {
                 let result = tool.execute(args);
                 log::info!(
