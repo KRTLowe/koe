@@ -498,3 +498,69 @@ impl Tool for MouseClickTool {
         }
     }
 }
+
+// ── Tool: activate_window ───────────────────────────
+
+pub struct ActivateWindowTool {
+    enabled: bool,
+}
+
+impl ActivateWindowTool {
+    pub fn new(config: &AppConfig) -> Self {
+        Self {
+            enabled: config
+                .tool_permissions
+                .get("activate_window")
+                .copied()
+                .unwrap_or(true),
+        }
+    }
+}
+
+impl Tool for ActivateWindowTool {
+    fn name(&self) -> &'static str {
+        "activate_window"
+    }
+
+    fn description(&self) -> &'static str {
+        "Bring a window to the foreground by HWND. If minimized, restores it first. \
+         Use after get_foreground_window to focus a specific window before other operations."
+    }
+
+    fn input_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "hwnd": { "type": "integer", "description": "Window handle to activate (from get_foreground_window)" }
+            },
+            "required": ["hwnd"]
+        })
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    fn execute(&self, args: &Value) -> ToolResult {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = args;
+            return ToolResult::err("activate_window is only available on Windows".to_string());
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = args.get("hwnd").and_then(|v| v.as_i64()).unwrap_or(0);
+            if hwnd == 0 {
+                return ToolResult::err("hwnd is required".to_string());
+            }
+            log::info!("[ActivateWindow] activating hwnd=0x{:x}", hwnd);
+            bring_window_to_foreground(hwnd as isize);
+            ToolResult::ok(format!("窗口已激活 (hwnd=0x{:x})", hwnd))
+        }
+    }
+}

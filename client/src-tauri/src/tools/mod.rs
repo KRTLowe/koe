@@ -78,6 +78,7 @@ impl ToolManager {
                 Box::new(input::TypeTextTool::new(config)),
                 Box::new(input::KeyPressTool::new(config)),
                 Box::new(input::MouseClickTool::new(config)),
+                Box::new(input::ActivateWindowTool::new(config)),
                 Box::new(ocr::OcrTool::new(config)),
                 Box::new(foreground_window::ForegroundWindowTool::new(config)),
             ],
