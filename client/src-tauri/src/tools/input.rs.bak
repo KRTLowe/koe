@@ -17,7 +17,9 @@ fn parse_hwnd(val: &Value) -> Option<i64> {
     })
 }
 
-// ---- Win32 FFI -------------------------------------------------------
+/// 解析 hwnd 参数：支持整数和 "0x..." 十六进制字符串
+
+// ── Win32 FFI ───────────────────────────────────────
 
 #[cfg(target_os = "windows")]
 mod win32 {
@@ -42,10 +44,6 @@ mod win32 {
     pub const VK_LWIN: u8 = 0x5B;
 
     pub const KEYEVENTF_KEYUP: u32 = 0x0002;
-    pub const KEYEVENTF_SCANCODE: u32 = 0x0008;
-    pub const KEYEVENTF_UNICODE: u32 = 0x0004;
-    pub const KEYEVENTF_EXTENDEDKEY: u32 = 0x0001;
-
     pub const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
     pub const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
     pub const MOUSEEVENTF_RIGHTDOWN: u32 = 0x0008;
@@ -54,19 +52,21 @@ mod win32 {
     pub const MOUSEEVENTF_MIDDLEUP: u32 = 0x0040;
 
     extern "system" {
+        pub fn keybd_event(bVk: u8, bScan: u8, dwFlags: u32, dwExtraInfo: usize);
         pub fn SetCursorPos(x: i32, y: i32) -> i32;
         pub fn mouse_event(dwFlags: u32, dx: i32, dy: i32, dwData: u32, dwExtraInfo: usize);
         pub fn VkKeyScanW(ch: u16) -> i16;
-        pub fn MapVirtualKeyW(uCode: u32, uMapType: u32) -> u32;
         pub fn SetForegroundWindow(hWnd: isize) -> i32;
+        pub fn SetFocus(hWnd: isize) -> isize;
         pub fn GetForegroundWindow() -> isize;
+        pub fn GetWindowThreadProcessId(hWnd: isize, lpdwProcessId: *mut u32) -> u32;
+        pub fn AttachThreadInput(idAttach: u32, idAttachTo: u32, fAttach: i32) -> i32;
         pub fn IsIconic(hWnd: isize) -> i32;
         pub fn ShowWindow(hWnd: isize, nCmdShow: i32) -> i32;
         pub fn SendInput(cInputs: u32, pInputs: *const INPUT, cbSize: i32) -> u32;
     }
 
     #[repr(C)]
-    #[derive(Clone, Copy)]
     pub struct KEYBDINPUT {
         pub wVk: u16,
         pub wScan: u16,
@@ -78,38 +78,22 @@ mod win32 {
     #[repr(C)]
     pub struct INPUT {
         pub type_: u32,
+        pub _pad: u32,
         pub ki: KEYBDINPUT,
-        pub _padding: [u8; 8],
+        pub _extra: [u8; 8], // pad to match MOUSEINPUT size (union member)
     }
 
     pub const INPUT_KEYBOARD: u32 = 1;
+    pub const KEYEVENTF_UNICODE: u32 = 0x0004;
 }
 
-// ---- Helpers ---------------------------------------------------------
+// ── Helpers ─────────────────────────────────────────
 
 #[cfg(target_os = "windows")]
-fn send_hardware_key(vk: u8, is_keyup: bool) {
+fn press_vk(vk: u8, hold: bool) {
+    let flags = if hold { 0 } else { win32::KEYEVENTF_KEYUP };
     unsafe {
-        let scan_code = win32::MapVirtualKeyW(vk as u32, 0) as u16;
-        let mut flags = win32::KEYEVENTF_SCANCODE;
-        if is_keyup {
-            flags |= win32::KEYEVENTF_KEYUP;
-        }
-        if (0x21..=0x2E).contains(&vk) {
-            flags |= win32::KEYEVENTF_EXTENDEDKEY;
-        }
-        let input = win32::INPUT {
-            type_: win32::INPUT_KEYBOARD,
-            ki: win32::KEYBDINPUT {
-                wVk: 0,
-                wScan: scan_code,
-                dwFlags: flags,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-            _padding: [0; 8],
-        };
-        win32::SendInput(1, &input, std::mem::size_of::<win32::INPUT>() as i32);
+        win32::keybd_event(vk, 0, flags, 0);
     }
 }
 
@@ -117,38 +101,37 @@ fn send_hardware_key(vk: u8, is_keyup: bool) {
 fn type_char(ch: char) -> bool {
     let scan = unsafe { win32::VkKeyScanW(ch as u16) };
     if scan == -1 {
-        return false;
+        return false; // 字符不支持
     }
     let vk = (scan & 0xFF) as u8;
     let shift = ((scan >> 8) & 0xFF) as u8;
 
     if shift & 1 != 0 {
-        send_hardware_key(win32::VK_SHIFT, false);
-        std::thread::sleep(Duration::from_millis(10));
+        press_vk(win32::VK_SHIFT, true);
     }
-    send_hardware_key(vk, false);
-    std::thread::sleep(Duration::from_millis(15));
-    send_hardware_key(vk, true);
-    std::thread::sleep(Duration::from_millis(15));
+    press_vk(vk, true);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    press_vk(vk, false);
     if shift & 1 != 0 {
-        send_hardware_key(win32::VK_SHIFT, true);
-        std::thread::sleep(Duration::from_millis(10));
+        press_vk(win32::VK_SHIFT, false);
     }
+    std::thread::sleep(std::time::Duration::from_millis(5));
     true
 }
 
+/// 使用 SendInput + KEYEVENTF_UNICODE 输入非 ASCII 文本。
 #[cfg(target_os = "windows")]
 fn type_unicode_text(text: &str) {
     let mut inputs: Vec<win32::INPUT> = Vec::new();
     for ch in text.chars() {
         match ch {
             '\n' => {
-                inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, ki: win32::KEYBDINPUT { wVk: win32::VK_RETURN as u16, wScan: 0, dwFlags: 0, time: 0, dwExtraInfo: 0 }, _padding: [0; 8] });
-                inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, ki: win32::KEYBDINPUT { wVk: win32::VK_RETURN as u16, wScan: 0, dwFlags: win32::KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 }, _padding: [0; 8] });
+                inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, _pad: 0, ki: win32::KEYBDINPUT { wVk: win32::VK_RETURN as u16, wScan: 0, dwFlags: 0, time: 0, dwExtraInfo: 0 }, _extra: [0; 8] });
+                inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, _pad: 0, ki: win32::KEYBDINPUT { wVk: win32::VK_RETURN as u16, wScan: 0, dwFlags: win32::KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 }, _extra: [0; 8] });
             }
             '\t' => {
-                inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, ki: win32::KEYBDINPUT { wVk: win32::VK_TAB as u16, wScan: 0, dwFlags: 0, time: 0, dwExtraInfo: 0 }, _padding: [0; 8] });
-                inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, ki: win32::KEYBDINPUT { wVk: win32::VK_TAB as u16, wScan: 0, dwFlags: win32::KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 }, _padding: [0; 8] });
+                inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, _pad: 0, ki: win32::KEYBDINPUT { wVk: win32::VK_TAB as u16, wScan: 0, dwFlags: 0, time: 0, dwExtraInfo: 0 }, _extra: [0; 8] });
+                inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, _pad: 0, ki: win32::KEYBDINPUT { wVk: win32::VK_TAB as u16, wScan: 0, dwFlags: win32::KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 }, _extra: [0; 8] });
             }
             _ => {
                 let code = ch as u32;
@@ -159,8 +142,8 @@ fn type_unicode_text(text: &str) {
                     vec![0xD800 | ((c >> 10) as u16), 0xDC00 | (c as u16)]
                 };
                 for wscan in units {
-                    inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, ki: win32::KEYBDINPUT { wVk: 0, wScan: wscan, dwFlags: win32::KEYEVENTF_UNICODE, time: 0, dwExtraInfo: 0 }, _padding: [0; 8] });
-                    inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, ki: win32::KEYBDINPUT { wVk: 0, wScan: wscan, dwFlags: win32::KEYEVENTF_UNICODE | win32::KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 }, _padding: [0; 8] });
+                    inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, _pad: 0, ki: win32::KEYBDINPUT { wVk: 0, wScan: wscan, dwFlags: win32::KEYEVENTF_UNICODE, time: 0, dwExtraInfo: 0 }, _extra: [0; 8] });
+                    inputs.push(win32::INPUT { type_: win32::INPUT_KEYBOARD, _pad: 0, ki: win32::KEYBDINPUT { wVk: 0, wScan: wscan, dwFlags: win32::KEYEVENTF_UNICODE | win32::KEYEVENTF_KEYUP, time: 0, dwExtraInfo: 0 }, _extra: [0; 8] });
                 }
             }
         }
@@ -170,6 +153,8 @@ fn type_unicode_text(text: &str) {
     }
 }
 
+/// 解析按键组合，返回 [(vk, is_hold)] 序列。
+/// 格式: "ctrl+c", "alt+tab", "enter", "f5"
 #[cfg(target_os = "windows")]
 fn parse_key_combo(combo: &str) -> Result<Vec<(u8, bool)>, String> {
     let combo_lower = combo.to_lowercase();
@@ -181,6 +166,7 @@ fn parse_key_combo(combo: &str) -> Result<Vec<(u8, bool)>, String> {
     let mut keys: Vec<(u8, bool)> = Vec::new();
     let main = parts.last().unwrap();
 
+    // 先记录所有修饰键
     for p in &parts[..parts.len() - 1] {
         match *p {
             "ctrl" | "control" => keys.push((win32::VK_CONTROL, true)),
@@ -191,6 +177,7 @@ fn parse_key_combo(combo: &str) -> Result<Vec<(u8, bool)>, String> {
         }
     }
 
+    // 解析主键
     let vk = match *main {
         "enter" | "return" => win32::VK_RETURN,
         "tab" => win32::VK_TAB,
@@ -231,12 +218,18 @@ fn parse_key_combo(combo: &str) -> Result<Vec<(u8, bool)>, String> {
         _ => return Err(format!("unknown key: {}", main)),
     };
 
+    // 主键按下 + 释放
     keys.push((vk, true));
     keys.push((vk, false));
 
+    // 修饰键释放（逆序），先收集再追加
     let mut releases: Vec<(u8, bool)> = Vec::new();
     for &(vk, _) in keys.iter().rev() {
-        if vk == win32::VK_CONTROL || vk == win32::VK_MENU || vk == win32::VK_SHIFT || vk == win32::VK_LWIN {
+        if vk == win32::VK_CONTROL
+            || vk == win32::VK_MENU
+            || vk == win32::VK_SHIFT
+            || vk == win32::VK_LWIN
+        {
             releases.push((vk, false));
         }
     }
@@ -249,13 +242,15 @@ fn parse_key_combo(combo: &str) -> Result<Vec<(u8, bool)>, String> {
 fn exec_key_combo(combo: &str) -> Result<(), String> {
     let sequence = parse_key_combo(combo)?;
     for (vk, hold) in &sequence {
-        send_hardware_key(*vk, !hold);
-        std::thread::sleep(Duration::from_millis(15));
+        press_vk(*vk, *hold);
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    std::thread::sleep(Duration::from_millis(20));
+    std::thread::sleep(std::time::Duration::from_millis(20));
     Ok(())
 }
 
+/// 将指定窗口带到前台（绕过 UIPI 限制）。
+/// Alt 键模拟 → SetForegroundWindow → SetFocus
 #[cfg(target_os = "windows")]
 fn bring_window_to_foreground(hwnd: isize) {
     unsafe {
@@ -263,15 +258,18 @@ fn bring_window_to_foreground(hwnd: isize) {
             return;
         }
         log::info!("[Focus] bringing window hwnd=0x{:x} to foreground", hwnd);
+        // 最小化窗口先还原
         if win32::IsIconic(hwnd) != 0 {
-            win32::ShowWindow(hwnd, 9);
-            std::thread::sleep(Duration::from_millis(150));
+            win32::ShowWindow(hwnd, 9); // SW_RESTORE = 9
+            std::thread::sleep(Duration::from_millis(100));
         }
-        send_hardware_key(win32::VK_MENU, false);
-        std::thread::sleep(Duration::from_millis(15));
-        send_hardware_key(win32::VK_MENU, true);
+        // Alt 键模拟绕过 UIPI，使 SetForegroundWindow 生效
+        win32::keybd_event(win32::VK_MENU, 0, 0, 0);
+        std::thread::sleep(Duration::from_millis(10));
+        win32::keybd_event(win32::VK_MENU, 0, win32::KEYEVENTF_KEYUP, 0);
         win32::SetForegroundWindow(hwnd);
-        std::thread::sleep(Duration::from_millis(150));
+        std::thread::sleep(Duration::from_millis(100));
+        // 等确认焦点到位
         for _ in 0..5 {
             if win32::GetForegroundWindow() == hwnd {
                 break;
@@ -281,7 +279,7 @@ fn bring_window_to_foreground(hwnd: isize) {
     }
 }
 
-// ---- Tool: type_text -------------------------------------------------
+// ── Tool: type_text ─────────────────────────────────
 
 pub struct TypeTextTool {
     enabled: bool,
@@ -290,15 +288,22 @@ pub struct TypeTextTool {
 impl TypeTextTool {
     pub fn new(config: &AppConfig) -> Self {
         Self {
-            enabled: config.tool_permissions.get("type_text").copied().unwrap_or(false),
+            enabled: config
+                .tool_permissions
+                .get("type_text")
+                .copied()
+                .unwrap_or(false),
         }
     }
 }
 
 impl Tool for TypeTextTool {
-    fn name(&self) -> &'static str { "type_text" }
+    fn name(&self) -> &'static str {
+        "type_text"
+    }
     fn description(&self) -> &'static str {
-        "Type text at the current keyboard focus. Supports all characters (Chinese, emoji etc.). \
+        "Type text at the current keyboard focus. Supports all characters (Chinese, emoji etc. via clipboard paste). \
+         Make sure the target window has focus before calling this. \
          Use end_with_enter=true to press Enter after typing."
     }
     fn input_schema(&self) -> Value {
@@ -307,13 +312,17 @@ impl Tool for TypeTextTool {
             "properties": {
                 "text": { "type": "string", "description": "Text to type" },
                 "end_with_enter": { "type": "boolean", "description": "Press Enter after typing (default: false)" },
-                "hwnd": { "type": "string", "description": "Window handle to activate before typing (e.g. 593428 or 0x90e14)" }
+                "hwnd": { "type": "string", "description": "Window handle to activate before typing (e.g. 593428 or 0x90e14, from get_foreground_window or list_windows)" }
             },
             "required": ["text"]
         })
     }
-    fn is_enabled(&self) -> bool { self.enabled }
-    fn set_enabled(&mut self, e: bool) { self.enabled = e; }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    fn set_enabled(&mut self, e: bool) {
+        self.enabled = e;
+    }
 
     fn execute(&self, args: &Value) -> ToolResult {
         #[cfg(not(target_os = "windows"))]
@@ -327,18 +336,28 @@ impl Tool for TypeTextTool {
             if text.is_empty() {
                 return ToolResult::err("text is required".to_string());
             }
-            let end_with_enter = args.get("end_with_enter").and_then(|v| v.as_bool()).unwrap_or(false);
+            let end_with_enter = args
+                .get("end_with_enter")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             if let Some(hwnd) = args.get("hwnd").and_then(parse_hwnd) {
                 log::info!("[TypeText] activating window hwnd=0x{:x}", hwnd);
                 bring_window_to_foreground(hwnd as isize);
                 std::thread::sleep(Duration::from_millis(50));
+                log::info!("[TypeText] window activated, starting typing");
             }
 
             log::info!("[TypeText] typing {} chars, end_with_enter={}", text.len(), end_with_enter);
 
             let all_ascii = text.chars().all(|c| {
-                c.is_ascii() && (c.is_alphanumeric() || c.is_ascii_punctuation() || c == ' ' || c == '\n' || c == '\r' || c == '\t')
+                c.is_ascii()
+                    && (c.is_alphanumeric()
+                        || c.is_ascii_punctuation()
+                        || c == ' '
+                        || c == '\n'
+                        || c == '\r'
+                        || c == '\t')
             });
 
             if all_ascii {
@@ -352,7 +371,11 @@ impl Tool for TypeTextTool {
                     exec_key_combo("enter").ok();
                 }
                 if skipped > 0 {
-                    ToolResult::ok(format!("已输入 {} 字符（{} 个不支持跳过）", text.len() - skipped, skipped))
+                    ToolResult::ok(format!(
+                        "已输入 {} 字符（{} 个不支持跳过）",
+                        text.len() - skipped,
+                        skipped
+                    ))
                 } else {
                     ToolResult::ok(format!("已输入 {} 字符", text.len()))
                 }
@@ -368,7 +391,7 @@ impl Tool for TypeTextTool {
     }
 }
 
-// ---- Tool: key_press -------------------------------------------------
+// ── Tool: key_press ─────────────────────────────────
 
 pub struct KeyPressTool {
     enabled: bool,
@@ -377,13 +400,19 @@ pub struct KeyPressTool {
 impl KeyPressTool {
     pub fn new(config: &AppConfig) -> Self {
         Self {
-            enabled: config.tool_permissions.get("key_press").copied().unwrap_or(false),
+            enabled: config
+                .tool_permissions
+                .get("key_press")
+                .copied()
+                .unwrap_or(false),
         }
     }
 }
 
 impl Tool for KeyPressTool {
-    fn name(&self) -> &'static str { "key_press" }
+    fn name(&self) -> &'static str {
+        "key_press"
+    }
     fn description(&self) -> &'static str {
         "Press a key or key combination. Examples: enter, tab, escape, ctrl+c, alt+tab, f5, ctrl+shift+esc"
     }
@@ -391,14 +420,18 @@ impl Tool for KeyPressTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "keys": { "type": "string", "description": "Key or combo: enter, ctrl+c, alt+tab, f5" },
-                "hwnd": { "type": "string", "description": "Window handle to activate before pressing (e.g. 593428 or 0x90e14)" }
+                "keys": { "type": "string", "description": "Key or combo: enter, ctrl+c, alt+tab, f5, ctrl+shift+esc" },
+                "hwnd": { "type": "string", "description": "Window handle to activate before pressing (e.g. 593428 or 0x90e14, from get_foreground_window)" }
             },
             "required": ["keys"]
         })
     }
-    fn is_enabled(&self) -> bool { self.enabled }
-    fn set_enabled(&mut self, e: bool) { self.enabled = e; }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    fn set_enabled(&mut self, e: bool) {
+        self.enabled = e;
+    }
 
     fn execute(&self, args: &Value) -> ToolResult {
         #[cfg(not(target_os = "windows"))]
@@ -426,7 +459,7 @@ impl Tool for KeyPressTool {
     }
 }
 
-// ---- Tool: mouse_click -----------------------------------------------
+// ── Tool: mouse_click ───────────────────────────────
 
 pub struct MouseClickTool {
     enabled: bool,
@@ -435,15 +468,22 @@ pub struct MouseClickTool {
 impl MouseClickTool {
     pub fn new(config: &AppConfig) -> Self {
         Self {
-            enabled: config.tool_permissions.get("mouse_click").copied().unwrap_or(false),
+            enabled: config
+                .tool_permissions
+                .get("mouse_click")
+                .copied()
+                .unwrap_or(false),
         }
     }
 }
 
 impl Tool for MouseClickTool {
-    fn name(&self) -> &'static str { "mouse_click" }
+    fn name(&self) -> &'static str {
+        "mouse_click"
+    }
     fn description(&self) -> &'static str {
-        "Move mouse to screen coordinates and click. Use list_windows + take_screenshot to find coordinates."
+        "Move mouse to screen coordinates and click. Use list_windows + take_screenshot to find coordinates. \
+         Coordinates are absolute screen pixels."
     }
     fn input_schema(&self) -> Value {
         serde_json::json!({
@@ -453,13 +493,17 @@ impl Tool for MouseClickTool {
                 "y": { "type": "integer", "description": "Screen Y coordinate" },
                 "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Mouse button (default: left)" },
                 "clicks": { "type": "integer", "description": "1 for single-click, 2 for double-click (default: 1)" },
-                "hwnd": { "type": "string", "description": "Window handle to activate before clicking (e.g. 593428 or 0x90e14)" }
+                "hwnd": { "type": "string", "description": "Window handle to activate before clicking (e.g. 593428 or 0x90e14, from get_foreground_window)" }
             },
             "required": ["x", "y"]
         })
     }
-    fn is_enabled(&self) -> bool { self.enabled }
-    fn set_enabled(&mut self, e: bool) { self.enabled = e; }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    fn set_enabled(&mut self, e: bool) {
+        self.enabled = e;
+    }
 
     fn execute(&self, args: &Value) -> ToolResult {
         #[cfg(not(target_os = "windows"))]
@@ -471,7 +515,10 @@ impl Tool for MouseClickTool {
         {
             let x = args.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let y = args.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let button = args.get("button").and_then(|v| v.as_str()).unwrap_or("left");
+            let button = args
+                .get("button")
+                .and_then(|v| v.as_str())
+                .unwrap_or("left");
             let clicks = args.get("clicks").and_then(|v| v.as_u64()).unwrap_or(1);
 
             if let Some(hwnd) = args.get("hwnd").and_then(parse_hwnd) {
@@ -509,7 +556,7 @@ impl Tool for MouseClickTool {
     }
 }
 
-// ---- Tool: activate_window -------------------------------------------
+// ── Tool: activate_window ───────────────────────────
 
 pub struct ActivateWindowTool {
     enabled: bool,
@@ -518,17 +565,26 @@ pub struct ActivateWindowTool {
 impl ActivateWindowTool {
     pub fn new(config: &AppConfig) -> Self {
         Self {
-            enabled: config.tool_permissions.get("activate_window").copied().unwrap_or(true),
+            enabled: config
+                .tool_permissions
+                .get("activate_window")
+                .copied()
+                .unwrap_or(true),
         }
     }
 }
 
 impl Tool for ActivateWindowTool {
-    fn name(&self) -> &'static str { "activate_window" }
-    fn description(&self) -> &'static str {
-        "Bring a window to the foreground by HWND. Works for minimized, hidden, or inactive windows \
-         restores and activates it so it becomes the focused window."
+    fn name(&self) -> &'static str {
+        "activate_window"
     }
+
+    fn description(&self) -> &'static str {
+        "Bring a window to the foreground by HWND. Works for minimized, hidden, or inactive windows — \
+         restores and activates it so it becomes the focused window. \
+         Use after get_foreground_window to focus a specific window before other operations."
+    }
+
     fn input_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -538,8 +594,14 @@ impl Tool for ActivateWindowTool {
             "required": ["hwnd"]
         })
     }
-    fn is_enabled(&self) -> bool { self.enabled }
-    fn set_enabled(&mut self, enabled: bool) { self.enabled = enabled; }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
 
     fn execute(&self, args: &Value) -> ToolResult {
         #[cfg(not(target_os = "windows"))]
@@ -547,6 +609,7 @@ impl Tool for ActivateWindowTool {
             let _ = args;
             return ToolResult::err("activate_window is only available on Windows".to_string());
         }
+
         #[cfg(target_os = "windows")]
         {
             let hwnd = parse_hwnd(args.get("hwnd").unwrap_or(&Value::Null)).unwrap_or(0);
