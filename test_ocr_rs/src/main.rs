@@ -19,6 +19,14 @@ fn parse_char_dict(path: &str) -> Vec<String> {
     keys
 }
 
+fn det_max_side(img_max: u32) -> u32 {
+    match img_max {
+        0..=1200 => img_max,
+        1201..=2000 => 1536,
+        _ => 1920,
+    }
+}
+
 // ── 检测预处理 ──────────────────────────────────────
 fn preprocess_det(img: &image::DynamicImage, max_side: u32) -> (Vec<f32>, Vec<i64>) {
     let (w, h) = (img.width(), img.height());
@@ -208,13 +216,15 @@ fn main() {
 
     // ── 检测 ──
     println!("[*] 检测文字区域...");
-    let (det_data, det_shape) = preprocess_det(&img, 1024);
+    let max_side = det_max_side(img.width().max(img.height()));
+    println!("    自适应 max_side={}", max_side);
+    let (det_data, det_shape) = preprocess_det(&img, max_side);
     let det_input = ort::value::Tensor::from_array((det_shape, det_data)).unwrap();
     let det_out = det.run(ort::inputs![det_input]).unwrap();
     let (det_out_shape, det_out_data) = det_out[0].try_extract_tensor::<f32>().unwrap();
     let shape: Vec<usize> = det_out_shape.iter().map(|&d| d as usize).collect();
     let data: Vec<f32> = det_out_data.to_vec();
-    let boxes = dbnet_postprocess(&data, &shape, img.width(), img.height(), 0.2);
+    let boxes = dbnet_postprocess(&data, &shape, img.width(), img.height(), 0.18);
     println!("    找到 {} 个文本区域", boxes.len());
 
     if boxes.is_empty() {

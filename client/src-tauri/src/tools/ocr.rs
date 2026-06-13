@@ -279,6 +279,14 @@ fn auto_download_or_guide() -> Result<(), String> {
 
 // ── 检测预处理（PP-OCRv6: NCHW 通道优先布局） ────────
 
+fn det_max_side(img_max: u32) -> u32 {
+    match img_max {
+        0..=1200 => img_max,
+        1201..=2000 => 1536,
+        _ => 1920,
+    }
+}
+
 fn preprocess_det(img: &image::DynamicImage, max_side: u32) -> Result<(Vec<f32>, Vec<i64>), String> {
     let (w, h) = (img.width(), img.height());
     let scale = ((max_side as f64) / (w.max(h) as f64)).min(1.0);
@@ -578,7 +586,8 @@ impl Tool for OcrTool {
         };
 
         // ── 检测 ──
-        let (det_data, det_shape) = match preprocess_det(&img, 1024) {
+        let max_side = det_max_side(img.width().max(img.height()));
+        let (det_data, det_shape) = match preprocess_det(&img, max_side) {
             Ok(v) => v,
             Err(e) => return ToolResult::err(e),
         };
@@ -598,7 +607,7 @@ impl Tool for OcrTool {
             let shape: Vec<usize> = out_shape.iter().map(|&d| d as usize).collect();
             let data: Vec<f32> = out_data.to_vec();
 
-            Ok(dbnet_postprocess(&data, &shape, (img.width(), img.height()), 0.3))
+            Ok(dbnet_postprocess(&data, &shape, (img.width(), img.height()), 0.18))
         }) {
             Ok(b) => b,
             Err(e) => return ToolResult::err(e),
